@@ -4,19 +4,21 @@ struct SettingsView: View {
     @ObservedObject var viewModel: WorkoutViewModel
     private let fileExporter = FileExporter()
 
+    private var lastExportText: String {
+        if let date = viewModel.lastExportDate {
+            return date.formatted(date: .abbreviated, time: .shortened)
+        }
+        return "Never"
+    }
+
     var body: some View {
         List {
             Section("Export") {
                 HStack {
                     Text("Last Export")
                     Spacer()
-                    if let date = viewModel.lastExportDate {
-                        Text(date.formatted(date: .abbreviated, time: .shortened))
-                            .foregroundStyle(.secondary)
-                    } else {
-                        Text("Never")
-                            .foregroundStyle(.secondary)
-                    }
+                    Text(lastExportText)
+                        .foregroundStyle(.secondary)
                 }
 
                 Button("Reset Export History", role: .destructive) {

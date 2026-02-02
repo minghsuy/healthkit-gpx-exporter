@@ -34,22 +34,30 @@ struct ContentView: View {
         .task {
             await viewModel.requestAuthorization()
         }
-        .alert("Error", isPresented: Binding(
-            get: { viewModel.errorMessage != nil },
-            set: { if !$0 { viewModel.errorMessage = nil } }
-        )) {
+        .alert("Error", isPresented: isShowingError) {
             Button("OK") { viewModel.errorMessage = nil }
         } message: {
             Text(viewModel.errorMessage ?? "")
         }
-        .alert("Success", isPresented: Binding(
-            get: { viewModel.successMessage != nil },
-            set: { if !$0 { viewModel.successMessage = nil } }
-        )) {
+        .alert("Success", isPresented: isShowingSuccess) {
             Button("OK") { viewModel.successMessage = nil }
         } message: {
             Text(viewModel.successMessage ?? "")
         }
+    }
+
+    private var isShowingError: Binding<Bool> {
+        Binding(
+            get: { viewModel.errorMessage != nil },
+            set: { if !$0 { viewModel.errorMessage = nil } }
+        )
+    }
+
+    private var isShowingSuccess: Binding<Bool> {
+        Binding(
+            get: { viewModel.successMessage != nil },
+            set: { if !$0 { viewModel.successMessage = nil } }
+        )
     }
 
     private var authorizationView: some View {

@@ -39,15 +39,17 @@ class WorkoutViewModel: ObservableObject {
     @Published var successMessage: String?
     @Published var healthKitAuthorized = false
 
+    private static let lastExportDateKey = "lastExportDate"
+
     private let healthKitManager = HealthKitManager()
     private let heartRateMatcher = HeartRateMatcher()
     private let gpxSerializer = GPXSerializer()
     private let fileExporter = FileExporter()
 
     var lastExportDate: Date? {
-        get { UserDefaults.standard.object(forKey: "lastExportDate") as? Date }
+        get { UserDefaults.standard.object(forKey: Self.lastExportDateKey) as? Date }
         set {
-            UserDefaults.standard.set(newValue, forKey: "lastExportDate")
+            UserDefaults.standard.set(newValue, forKey: Self.lastExportDateKey)
             objectWillChange.send()
         }
     }
@@ -106,11 +108,9 @@ class WorkoutViewModel: ObservableObject {
     }
 
     func exportAllNew() async {
-        let newWorkouts: [CyclingWorkout]
-        if let lastExport = lastExportDate {
-            newWorkouts = workouts.filter { $0.date > lastExport }
-        } else {
-            newWorkouts = workouts
+        let newWorkouts = workouts.filter { workout in
+            guard let lastExport = lastExportDate else { return true }
+            return workout.date > lastExport
         }
         guard !newWorkouts.isEmpty else { return }
         await exportWorkouts(newWorkouts)
@@ -154,8 +154,7 @@ class WorkoutViewModel: ObservableObject {
 
         if exportedCount > 0 {
             lastExportDate = Date()
-            let dir = (try? fileExporter.getExportDirectory().path) ?? "unknown"
-            successMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to:\n\(dir)"
+            successMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive."
         }
 
         isExporting = false
@@ -168,7 +167,7 @@ class WorkoutViewModel: ObservableObject {
     }
 
     func resetLastExportDate() {
-        UserDefaults.standard.removeObject(forKey: "lastExportDate")
+        UserDefaults.standard.removeObject(forKey: Self.lastExportDateKey)
         for index in workouts.indices {
             workouts[index].isExported = false
         }
