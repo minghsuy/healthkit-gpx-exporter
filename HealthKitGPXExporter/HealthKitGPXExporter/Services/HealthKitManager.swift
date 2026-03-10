@@ -134,12 +134,32 @@ class HealthKitManager {
     }
 
     func fetchAverageHeartRate(for workout: HKWorkout) async throws -> Int? {
-        let samples = try await fetchHeartRateSamples(for: workout)
-        guard !samples.isEmpty else { return nil }
+        guard let heartRateType = HKQuantityType.quantityType(forIdentifier: .heartRate) else {
+            return nil
+        }
 
-        let bpmUnit = HKUnit.count().unitDivided(by: .minute())
-        let total = samples.reduce(0.0) { $0 + $1.quantity.doubleValue(for: bpmUnit) }
-        return Int(total / Double(samples.count))
+        let predicate = HKQuery.predicateForObjects(from: workout)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let query = HKStatisticsQuery(
+                quantityType: heartRateType,
+                quantitySamplePredicate: predicate,
+                options: .discreteAverage
+            ) { _, statistics, error in
+                if let error = error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                let bpmUnit = HKUnit.count().unitDivided(by: .minute())
+                if let average = statistics?.averageQuantity() {
+                    continuation.resume(returning: Int(average.doubleValue(for: bpmUnit)))
+                } else {
+                    continuation.resume(returning: nil)
+                }
+            }
+            healthStore.execute(query)
+        }
     }
 }
 
