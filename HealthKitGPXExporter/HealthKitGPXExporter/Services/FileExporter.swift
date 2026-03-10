@@ -19,7 +19,10 @@ struct FileExporter {
         if let iCloudURL = fileManager.url(forUbiquityContainerIdentifier: nil) {
             baseDir = iCloudURL.appendingPathComponent("Documents")
         } else {
-            baseDir = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first!
+            guard let documentDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
+                throw FileExportError.directoryNotFound
+            }
+            baseDir = documentDirectory
         }
 
         let exportDir = baseDir
@@ -51,11 +54,14 @@ struct FileExporter {
 
 enum FileExportError: LocalizedError {
     case encodingFailed
+    case directoryNotFound
 
     var errorDescription: String? {
         switch self {
         case .encodingFailed:
             return "Failed to encode GPX data."
+        case .directoryNotFound:
+            return "Could not find the document directory."
         }
     }
 }
