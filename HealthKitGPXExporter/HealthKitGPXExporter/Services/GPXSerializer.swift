@@ -27,11 +27,11 @@ struct GPXSerializer {
              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
              xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
           <metadata>
-            <name>\(escapeXML(name))</name>
-            <time>\(timeStr)</time>
+            \(xmlTag("name", value: name))
+            \(xmlTag("time", value: timeStr))
           </metadata>
           <trk>
-            <name>\(escapeXML(name))</name>
+            \(xmlTag("name", value: name))
             <type>cycling</type>
             <trkseg>
         """
@@ -42,14 +42,15 @@ struct GPXSerializer {
             let ele = String(format: "%.1f", point.location.altitude)
             let time = dateFormatter.string(from: point.location.timestamp)
 
-            xml += "\n      <trkpt lat=\"\(lat)\" lon=\"\(lon)\">"
-            xml += "\n        <ele>\(ele)</ele>"
-            xml += "\n        <time>\(time)</time>"
+            let attributes = [("lat", lat), ("lon", lon)]
+            xml += "\n      \(xmlOpenTag("trkpt", attributes: attributes))"
+            xml += "\n        \(xmlTag("ele", value: ele))"
+            xml += "\n        \(xmlTag("time", value: time))"
 
             if let hr = point.heartRate {
                 xml += "\n        <extensions>"
                 xml += "\n          <gpxtpx:TrackPointExtension>"
-                xml += "\n            <gpxtpx:hr>\(hr)</gpxtpx:hr>"
+                xml += "\n            \(xmlTag("gpxtpx:hr", value: "\(hr)"))"
                 xml += "\n          </gpxtpx:TrackPointExtension>"
                 xml += "\n        </extensions>"
             }
@@ -62,6 +63,15 @@ struct GPXSerializer {
         xml += "\n</gpx>\n"
 
         return xml
+    }
+
+    private func xmlTag(_ name: String, value: String) -> String {
+        "<\(name)>\(escapeXML(value))</\(name)>"
+    }
+
+    private func xmlOpenTag(_ name: String, attributes: [(String, String)]) -> String {
+        let attrString = attributes.map { "\($0.0)=\"\(escapeXML($0.1))\"" }.joined(separator: " ")
+        return "<\(name) \(attrString)>"
     }
 
     private func escapeXML(_ string: String) -> String {
