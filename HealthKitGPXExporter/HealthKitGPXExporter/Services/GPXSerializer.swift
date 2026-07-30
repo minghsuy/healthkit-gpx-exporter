@@ -2,6 +2,8 @@ import Foundation
 import CoreLocation
 
 struct GPXSerializer {
+    private let creator: String
+
     private let dateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
@@ -14,6 +16,12 @@ struct GPXSerializer {
         return formatter
     }()
 
+    init(appVersion: String = Bundle.main.object(
+        forInfoDictionaryKey: "CFBundleShortVersionString"
+    ) as? String ?? "Unknown") {
+        creator = "HealthKitGPXExporter/\(appVersion)"
+    }
+
     func serialize(workoutDate: Date, matchedData: [MatchedDataPoint]) -> String {
         let name = "Cycling \(nameFormatter.string(from: workoutDate))"
         let timeStr = dateFormatter.string(from: workoutDate)
@@ -21,7 +29,7 @@ struct GPXSerializer {
         var xml = """
         <?xml version="1.0" encoding="UTF-8"?>
         <gpx version="1.1"
-             creator="HealthKitGPXExporter/1.0"
+             creator="\(escapeXML(creator))"
              xmlns="http://www.topografix.com/GPX/1/1"
              xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
              xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"

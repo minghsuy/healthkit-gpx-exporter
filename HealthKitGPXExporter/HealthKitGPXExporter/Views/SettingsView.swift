@@ -4,6 +4,10 @@ struct SettingsView: View {
     @ObservedObject var viewModel: WorkoutViewModel
     private let fileExporter = FileExporter()
 
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "Unknown"
+    }
+
     private var lastExportText: String {
         if let date = viewModel.lastExportDate {
             return date.formatted(date: .abbreviated, time: .shortened)
@@ -56,7 +60,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Version")
                     Spacer()
-                    Text("1.0")
+                    Text(appVersion)
                         .foregroundStyle(.secondary)
                 }
 
