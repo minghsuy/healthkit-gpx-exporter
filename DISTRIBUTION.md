@@ -82,7 +82,11 @@ to GitHub releases.
 7. Download both assets from GitHub and run:
 
    ```bash
+   # Linux
    sha256sum --check HealthKitGPXExporter-1.0.0-source.tar.gz.sha256
+
+   # macOS
+   shasum -a 256 --check HealthKitGPXExporter-1.0.0-source.tar.gz.sha256
    ```
 
 If the workflow fails before publishing, fix the cause through a new pull

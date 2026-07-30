@@ -77,6 +77,21 @@ expect_failure \
   "candidate missing a target build setting" \
   "$missing_target_settings/scripts/release-preflight.sh" --candidate
 
+wrong_device_family="$tmp_root/wrong-device-family"
+new_fixture "$wrong_device_family"
+device_settings="$wrong_device_family/HealthKitGPXExporter/HealthKitGPXExporter.xcodeproj/project.pbxproj"
+awk '
+  !changed && /TARGETED_DEVICE_FAMILY = "1,2";/ {
+    sub(/"1,2"/, "\"1\"")
+    changed = 1
+  }
+  { print }
+' "$device_settings" >"${device_settings}.tmp"
+mv "${device_settings}.tmp" "$device_settings"
+expect_failure \
+  "candidate with inconsistent iPhone/iPad device family" \
+  "$wrong_device_family/scripts/release-preflight.sh" --candidate
+
 lightweight="$tmp_root/lightweight"
 new_fixture "$lightweight"
 git -C "$lightweight" tag v1.0.0

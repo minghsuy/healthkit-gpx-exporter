@@ -78,6 +78,19 @@ platform_occurrences=$(
 [[ "$platforms" == "iphoneos iphonesimulator" ]] ||
   fail "shipping platforms must be explicit iOS device and simulator targets"
 
+device_families=$(
+  sed -nE 's/^[[:space:]]*TARGETED_DEVICE_FAMILY = "([^"]+)";$/\1/p' "$project_file" |
+    sort -u
+)
+device_family_occurrences=$(
+  sed -nE 's/^[[:space:]]*TARGETED_DEVICE_FAMILY = "([^"]+)";$/\1/p' "$project_file" |
+    awk 'NF { count += 1 } END { print count + 0 }'
+)
+[[ "$device_family_occurrences" -eq 6 ]] ||
+  fail "expected TARGETED_DEVICE_FAMILY in Debug/Release for all three targets, found $device_family_occurrences"
+[[ "$device_families" == "1,2" ]] ||
+  fail "shipping device families must remain iPhone and iPad"
+
 release_heading="## [$release_version] - "
 release_lines=$(grep -F "$release_heading" "$changelog_file" || true)
 release_line_count=$(printf '%s\n' "$release_lines" | awk 'NF { count += 1 } END { print count + 0 }')

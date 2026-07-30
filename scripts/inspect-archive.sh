@@ -37,6 +37,8 @@ assert_plist "$info_plist" CFBundleIdentifier com.minghsuy.HealthKitGPXExporter
 assert_plist "$info_plist" CFBundleShortVersionString 1.0
 assert_plist "$info_plist" CFBundleVersion 2
 assert_plist "$info_plist" MinimumOSVersion 26.2
+assert_plist "$info_plist" UIDeviceFamily:0 1
+assert_plist "$info_plist" UIDeviceFamily:1 2
 assert_plist \
   "$info_plist" \
   NSHealthShareUsageDescription \
