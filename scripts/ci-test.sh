@@ -24,6 +24,9 @@ if [[ -n "${HEALTHKIT_CI_WORK_ROOT:-}" ]]; then
     *) echo "HEALTHKIT_CI_WORK_ROOT must be a healthkit-xcode path under RUNNER_TEMP" >&2; exit 1 ;;
   esac
   mkdir -p "$work_root"
+elif [[ -n "${RUNNER_TEMP:-}" ]]; then
+  work_root="$RUNNER_TEMP/healthkit-xcode"
+  mkdir -p "$work_root"
 else
   work_root=$(mktemp -d "${TMPDIR:-/tmp}/healthkit-xcode.XXXXXX")
   cleanup_work_root=true
