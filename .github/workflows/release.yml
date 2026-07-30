@@ -102,37 +102,31 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          archive_name="HealthKitGPXExporter-${GITHUB_REF_NAME#v}-source.tar.gz"
+          hash_name="${archive_name}.sha256"
+
           if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" \
-              --verify-tag \
-              --draft=false \
-              --prerelease=false \
-              --latest \
-              --title "${GITHUB_REF_NAME}" \
-              --notes-file "${RUNNER_TEMP}/release-notes.md"
+            existing_assets=$(
+              gh release view "${GITHUB_REF_NAME}" \
+                --json assets \
+                --jq '.assets[].name'
+            )
+            unexpected_assets=$(
+              printf '%s\n' "${existing_assets}" |
+                awk -v archive="${archive_name}" -v hash="${hash_name}" \
+                  'NF && $0 != archive && $0 != hash'
+            )
+            if [[ -n "${unexpected_assets}" ]]; then
+              echo "Refusing to modify a source-only release with unexpected assets:" >&2
+              printf '%s\n' "${unexpected_assets}" >&2
+              exit 1
+            fi
           else
             gh release create "${GITHUB_REF_NAME}" \
               --verify-tag \
+              --draft \
               --title "${GITHUB_REF_NAME}" \
               --notes-file "${RUNNER_TEMP}/release-notes.md"
-          fi
-
-          archive_name="HealthKitGPXExporter-${GITHUB_REF_NAME#v}-source.tar.gz"
-          hash_name="${archive_name}.sha256"
-          existing_assets=$(
-            gh release view "${GITHUB_REF_NAME}" \
-              --json assets \
-              --jq '.assets[].name'
-          )
-          unexpected_assets=$(
-            printf '%s\n' "${existing_assets}" |
-              awk -v archive="${archive_name}" -v hash="${hash_name}" \
-                'NF && $0 != archive && $0 != hash'
-          )
-          if [[ -n "${unexpected_assets}" ]]; then
-            echo "Refusing to modify a source-only release with unexpected assets:" >&2
-            printf '%s\n' "${unexpected_assets}" >&2
-            exit 1
           fi
 
           gh release upload "${GITHUB_REF_NAME}" \
@@ -149,3 +143,11 @@ jobs:
             cd "${RUNNER_TEMP}/downloaded-assets"
             sha256sum --check "${hash_name}"
           )
+
+          gh release edit "${GITHUB_REF_NAME}" \
+            --verify-tag \
+            --draft=false \
+            --prerelease=false \
+            --latest \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file "${RUNNER_TEMP}/release-notes.md"
