@@ -1,0 +1,151 @@
+name: Source release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: macos-26-intel
+    timeout-minutes: 30
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.2.app/Contents/Developer
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Refresh origin/main
+        run: git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
+
+      - name: Validate annotated tag and release contract
+        run: ./scripts/release-preflight.sh --tag
+
+      - name: Build and test without signing
+        run: ./scripts/ci-test.sh
+
+  release:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout tagged source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Refresh origin/main
+        run: git fetch --force origin "+refs/heads/main:refs/remotes/origin/main"
+
+      - name: Revalidate release contract
+        run: ./scripts/release-preflight.sh --tag
+
+      - name: Build deterministic source assets and hashes
+        run: |
+          ./scripts/package-source.sh \
+            "${GITHUB_REF_NAME}" \
+            "${RUNNER_TEMP}/source-assets"
+
+      - name: Prepare source-only release notes
+        run: |
+          archive_name="HealthKitGPXExporter-${GITHUB_REF_NAME#v}-source.tar.gz"
+          asset_hash=$(awk 'NR == 1 { print $1 }' \
+            "${RUNNER_TEMP}/source-assets/${archive_name}.sha256")
+          {
+            echo "## Source-only release"
+            echo
+            echo "This release contains reviewed source code only. It does not include an installable or Apple-signed application."
+            echo
+            echo "See [DISTRIBUTION.md](https://github.com/${GITHUB_REPOSITORY}/blob/${GITHUB_REF_NAME}/DISTRIBUTION.md) for the signing and device-validation boundary."
+            echo
+            echo "### Tested environment"
+            echo
+            echo "- GitHub-hosted macOS 26 Intel runner"
+            echo "- Xcode 26.2 and iOS 26.2 simulator"
+            echo "- Debug and Release builds, complete unit/UI simulator tests, and unsigned Release archive metadata inspection"
+            echo
+            echo "### Privacy and permissions"
+            echo
+            echo "- Reads cycling workouts, workout routes, and heart-rate samples from HealthKit"
+            echo "- Requests no HealthKit write access"
+            echo "- Contains no analytics or app-initiated network calls"
+            echo
+            echo "### Known limitations"
+            echo
+            echo "- Source code only; no installable application is attached"
+            echo "- Apple signing, TestFlight, and App Store distribution are outside this release"
+            echo
+            echo "### Assets"
+            echo
+            echo "- \`${archive_name}\`"
+            echo "- SHA-256: \`${asset_hash}\`"
+            echo
+            awk -v version="${GITHUB_REF_NAME#v}" '
+              index($0, "## [" version "] - ") == 1 { found = 1 }
+              /^## \[/ && found && index($0, "## [" version "] - ") != 1 { exit }
+              found { print }
+            ' CHANGELOG.md
+          } >"${RUNNER_TEMP}/release-notes.md"
+
+      - name: Create or repair GitHub source release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            gh release edit "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --draft=false \
+              --prerelease=false \
+              --latest \
+              --title "${GITHUB_REF_NAME}" \
+              --notes-file "${RUNNER_TEMP}/release-notes.md"
+          else
+            gh release create "${GITHUB_REF_NAME}" \
+              --verify-tag \
+              --title "${GITHUB_REF_NAME}" \
+              --notes-file "${RUNNER_TEMP}/release-notes.md"
+          fi
+
+          archive_name="HealthKitGPXExporter-${GITHUB_REF_NAME#v}-source.tar.gz"
+          hash_name="${archive_name}.sha256"
+          existing_assets=$(
+            gh release view "${GITHUB_REF_NAME}" \
+              --json assets \
+              --jq '.assets[].name'
+          )
+          unexpected_assets=$(
+            printf '%s\n' "${existing_assets}" |
+              awk -v archive="${archive_name}" -v hash="${hash_name}" \
+                'NF && $0 != archive && $0 != hash'
+          )
+          if [[ -n "${unexpected_assets}" ]]; then
+            echo "Refusing to modify a source-only release with unexpected assets:" >&2
+            printf '%s\n' "${unexpected_assets}" >&2
+            exit 1
+          fi
+
+          gh release upload "${GITHUB_REF_NAME}" \
+            "${RUNNER_TEMP}/source-assets/${archive_name}" \
+            "${RUNNER_TEMP}/source-assets/${hash_name}" \
+            --clobber
+
+          mkdir -p "${RUNNER_TEMP}/downloaded-assets"
+          gh release download "${GITHUB_REF_NAME}" \
+            --pattern "${archive_name}" \
+            --pattern "${hash_name}" \
+            --dir "${RUNNER_TEMP}/downloaded-assets"
+          (
+            cd "${RUNNER_TEMP}/downloaded-assets"
+            sha256sum --check "${hash_name}"
+          )
