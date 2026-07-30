@@ -2,7 +2,9 @@
 
 HealthKit GPX Exporter is a privacy-first Apple-platform app for exporting
 cycling workout routes and heart-rate samples from Apple Health to GPX 1.1.
-The app has no third-party dependencies and makes no network calls.
+The app has no third-party dependencies, analytics, or app-initiated network
+calls. Files written to iCloud Drive may be synchronized by Apple's iCloud
+service according to the user's device and account settings.
 
 Exports are written to:
 
@@ -92,6 +94,12 @@ settings.
 5. Validate important exports in an independent GPX consumer before deleting or
    changing the source data.
 
+Each GPX contains the cycling track's coordinates, timestamps, elevation, and
+matched heart-rate samples when a sample is within five seconds of a route
+point. A workout with no HealthKit route is silently skipped and produces no
+file in the current implementation; that behavior must be included in
+physical-device release validation.
+
 The app records the time of a successful export to identify newer workouts.
 **Reset Export History** in Settings clears that marker; it does not delete GPX
 files.
@@ -124,7 +132,8 @@ required before TestFlight, App Store, or source release.
 Workout routes and heart-rate data are sensitive. The app reads only the
 HealthKit types required for export and writes GPX files to the user's own
 iCloud or local documents container. It has no analytics or app-initiated
-network calls. Contributors should preserve this user-controlled boundary.
+network calls, although iCloud Drive may synchronize files through Apple.
+Contributors should preserve this user-controlled boundary.
 
 ## License
 

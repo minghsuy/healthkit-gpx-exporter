@@ -44,8 +44,9 @@ Complete and review all of the following as a separate issue and pull request:
    targets.
 3. Register and verify the HealthKit capability and
    `iCloud.com.minghsuy.HealthKitGPXExporter` container in the developer portal.
-4. Add a production app icon and all store metadata and privacy disclosures
-   required for the selected channel.
+4. For an installable distribution channel, add a production app icon and all
+   store metadata and privacy disclosures required for that channel. Record this
+   step as reviewed `N/A` for a source-only release.
 5. Create the App Store Connect app record and configure least-privilege signing
    credentials. Store credentials only in an approved secret store.
 6. Archive and validate the Release configuration with Apple signing enabled.
