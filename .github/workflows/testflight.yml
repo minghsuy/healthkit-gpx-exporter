@@ -11,9 +11,9 @@ on:
 permissions:
   contents: read
 
-# One upload at a time. Unlike ci.yml, never cancel in progress: a run killed
-# mid-upload can leave a half-processed build in App Store Connect, while a
-# queued run just uploads a little later.
+# Latest wins: one run at a time, and a newer push replaces an older queued
+# run. Unlike ci.yml, never cancel the run in progress: a run killed mid-upload
+# can leave a half-processed build in App Store Connect.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
@@ -24,6 +24,10 @@ jobs:
     # Job-level `if:` cannot read `secrets`, so this cheap job turns their
     # presence into an output the upload job can gate on. Until the owner adds
     # the secrets (docs/CI.md) the workflow succeeds without uploading.
+    # The secrets are environment secrets: only jobs that name the environment
+    # can read them, and its deployment-branch policy (main only, docs/CI.md)
+    # stops a pushed branch that edits this file from reading them.
+    environment: testflight
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
@@ -47,7 +51,10 @@ jobs:
   archive-and-upload:
     name: Archive and upload to TestFlight
     needs: check-secrets
-    if: needs.check-secrets.outputs.ready == 'true'
+    # The ref guard keeps a workflow_dispatch from another branch from
+    # uploading that branch's code.
+    if: github.ref == 'refs/heads/main' && needs.check-secrets.outputs.ready == 'true'
+    environment: testflight
     # This repository is PUBLIC: jobs must stay on GitHub-hosted runners. Never
     # route them to the fleet's self-hosted runner (dgx-infra STANDARDS.md §3).
     # The XCODE_APP pin must name a version the macos-26 image still ships.
