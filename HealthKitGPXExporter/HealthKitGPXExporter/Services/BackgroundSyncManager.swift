@@ -92,7 +92,9 @@ final class BackgroundSyncManager {
                 return workout.startDate > lastExport
             }
         }
-        candidates += await loadRetryWorkouts(excluding: Set(candidates.map(\.uuid)))
+        let alreadyCandidates = Set(candidates.map(\.uuid))
+        let retryWorkouts = await loadRetryWorkouts(excluding: alreadyCandidates)
+        candidates.append(contentsOf: retryWorkouts)
 
         var retry: [UUID] = []
         var exported = 0
