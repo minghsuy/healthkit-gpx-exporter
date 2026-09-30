@@ -3,6 +3,26 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var viewModel: WorkoutViewModel
     private let fileExporter = FileExporter()
+    private let tokenStore = KeychainTokenStore()
+
+    @AppStorage(UploadSettings.enabledKey) private var uploadEnabled = false
+    @AppStorage(UploadSettings.serverURLKey) private var serverURL = ""
+    @State private var tokenInput = ""
+    @State private var hasToken = KeychainTokenStore().readToken() != nil
+    @State private var tokenError: String?
+
+    private var serverURLProblem: String? {
+        do {
+            _ = try UploadRequestBuilder.endpointURL(serverURL: serverURL)
+            return nil
+        } catch {
+            return error.localizedDescription
+        }
+    }
+
+    private var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
+    }
 
     private var lastExportText: String {
         if let date = viewModel.lastExportDate {
@@ -24,6 +44,83 @@ struct SettingsView: View {
                 Button("Reset Export History", role: .destructive) {
                     viewModel.resetLastExportDate()
                 }
+            }
+
+            Section {
+                Toggle("Upload to My Server", isOn: $uploadEnabled)
+
+                TextField("https://your-server:8420", text: $serverURL)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+
+                if uploadEnabled, let problem = serverURLProblem {
+                    Text(problem)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                SecureField(hasToken ? "Token saved; type to replace" : "Bearer token (optional)", text: $tokenInput)
+
+                HStack {
+                    Button("Save Token") {
+                        do {
+                            try tokenStore.saveToken(tokenInput)
+                            tokenInput = ""
+                            hasToken = true
+                            tokenError = nil
+                        } catch {
+                            tokenError = error.localizedDescription
+                        }
+                    }
+                    .disabled(tokenInput.isEmpty)
+
+                    Spacer()
+
+                    if hasToken {
+                        Button("Remove Token", role: .destructive) {
+                            do {
+                                try tokenStore.deleteToken()
+                                hasToken = false
+                                tokenError = nil
+                            } catch {
+                                tokenError = error.localizedDescription
+                            }
+                        }
+                    }
+                }
+                // Two buttons in one List row both fire on a tap unless each
+                // is borderless.
+                .buttonStyle(.borderless)
+
+                if let tokenError {
+                    Text(tokenError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                HStack {
+                    Text("Pending Uploads")
+                    Spacer()
+                    Text("\(GPXUploader.shared.pendingFilenames.count)")
+                        .foregroundStyle(.secondary)
+                }
+
+                if let lastUpload = GPXUploader.shared.lastResult {
+                    Text(lastUpload)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            } header: {
+                Text("Upload")
+            } footer: {
+                Text("Off by default. When on, each exported GPX file is also sent to the server URL above, and only there. The token is stored in the Keychain. Nothing is sent anywhere else.")
+            }
+
+            Section("Background Sync") {
+                Text(BackgroundSyncManager.shared.lastResult ?? "No background sync yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
             Section("Status") {
@@ -56,7 +153,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Version")
                     Spacer()
-                    Text("1.0")
+                    Text(appVersion)
                         .foregroundStyle(.secondary)
                 }
 
