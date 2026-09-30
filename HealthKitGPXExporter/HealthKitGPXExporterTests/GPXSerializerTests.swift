@@ -88,6 +88,22 @@ struct GPXSerializerTests {
         #expect(!xml.contains("Jerry's"))
     }
 
+    @Test func xmlIllegalCharactersAreStripped() throws {
+        let name = "A\u{0}B\u{1}C\u{1F}D\u{FFFE}E\u{FFFF}F\tG"
+        let metadata = GPXWorkoutMetadata(
+            source: GPXWorkoutSource(name: name, bundleIdentifier: "com.example\u{8}.app")
+        )
+        let xml = GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [], metadata: metadata)
+
+        #expect(xml.contains("<hkx:name>ABCDEF\tG</hkx:name>"))
+        #expect(xml.contains("<hkx:bundleIdentifier>com.example.app</hkx:bundleIdentifier>"))
+
+        let parser = XMLParser(data: Data(xml.utf8))
+        let parsed = parser.parse()
+        #expect(parsed)
+        #expect(parser.parserError == nil)
+    }
+
     @Test func zoneSummariesAreWrittenWithOpenBoundsOmitted() throws {
         let metadata = GPXWorkoutMetadata(
             source: nil,

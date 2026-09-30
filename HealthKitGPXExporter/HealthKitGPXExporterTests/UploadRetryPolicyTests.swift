@@ -8,7 +8,7 @@ struct UploadRetryPolicyTests {
         #expect(UploadRetryPolicy.decision(for: .httpStatus(status), rejections: 3) == .done)
     }
 
-    @Test(arguments: [400, 401, 403, 404, 409, 413, 422])
+    @Test(arguments: [400, 404, 409, 413, 422])
     func clientErrorCountsARejection(status: Int) {
         #expect(UploadRetryPolicy.decision(for: .httpStatus(status), rejections: 0) == .retry(rejections: 1))
     }
@@ -22,6 +22,12 @@ struct UploadRetryPolicyTests {
     @Test(arguments: [408, 429, 500, 502, 503, 304])
     func transientStatusRetriesWithoutCounting(status: Int) {
         #expect(UploadRetryPolicy.decision(for: .httpStatus(status), rejections: 4) == .retry(rejections: 4))
+    }
+
+    @Test(arguments: [401, 403])
+    func authenticationFailureStopsWithoutCounting(status: Int) {
+        #expect(UploadRetryPolicy.decision(for: .httpStatus(status), rejections: 0) == .authenticationFailed)
+        #expect(UploadRetryPolicy.decision(for: .httpStatus(status), rejections: 4) == .authenticationFailed)
     }
 
     @Test func transportErrorRetriesWithoutCounting() {

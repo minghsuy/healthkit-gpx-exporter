@@ -1,6 +1,23 @@
 import Foundation
 import HealthKit
 
+/// When a workout that could not be exported stays on the retry list.
+/// Plain Swift so the rule is unit-testable.
+enum RetryAdmission {
+    /// A workout whose route has not landed this long after the app first
+    /// saw it is given up on.
+    static let window: TimeInterval = 7 * 24 * 3600
+
+    /// Returns the first-seen date to keep, or nil when the workout expires.
+    /// The window runs from when the app first saw the workout, never from
+    /// its end date: a ride synced days after it ended still gets a full
+    /// window. A workout seen for the first time always joins.
+    static func firstSeen(previous: Date?, now: Date) -> Date? {
+        let firstSeen = previous ?? now
+        return now.timeIntervalSince(firstSeen) < window ? firstSeen : nil
+    }
+}
+
 /// Exports new cycling workouts automatically: HKObserverQuery background
 /// delivery wakes the app, and an HKAnchoredObjectQuery returns the workouts
 /// added since the persisted anchor. A second observer on workout routes
@@ -9,13 +26,13 @@ final class BackgroundSyncManager {
     static let shared = BackgroundSyncManager()
 
     private static let anchorKey = "workoutSyncAnchor"
-    private static let retryKey = "workoutSyncRetryUUIDs"
+    /// [UUID string: first seen]. Replaces the draft's plain UUID array.
+    private static let retryKey = "workoutSyncRetry"
+    private static let legacyRetryKey = "workoutSyncRetryUUIDs"
     private static let lastResultKey = "lastBackgroundSyncResult"
     // Display only ("Last Export" in Settings); which workouts are exported
     // is tracked by UUID in ExportedWorkoutStore.
     private static let lastExportDateKey = "lastExportDate"
-    // A workout whose route has not landed after this long is given up on.
-    private static let retryWindow: TimeInterval = 7 * 24 * 3600
 
     private let healthKitManager = HealthKitManager()
     private lazy var workoutExporter = WorkoutExporter(healthKitManager: healthKitManager)
@@ -41,8 +58,7 @@ final class BackgroundSyncManager {
                 predicate: HKQuery.predicateForWorkouts(with: .cycling)
             ) { completion in
                 Task { @MainActor in
-                    await BackgroundSyncManager.shared.sync()
-                    completion()
+                    await BackgroundSyncManager.shared.handleWake(completion)
                 }
             }
         }
@@ -52,8 +68,7 @@ final class BackgroundSyncManager {
         if routeObserver == nil {
             routeObserver = healthKitManager.observe(HKSeriesType.workoutRoute(), predicate: nil) { completion in
                 Task { @MainActor in
-                    await BackgroundSyncManager.shared.sync()
-                    completion()
+                    await BackgroundSyncManager.shared.handleWake(completion)
                 }
             }
         }
@@ -75,8 +90,19 @@ final class BackgroundSyncManager {
         }
     }
 
-    /// Exports workouts added since the last sync, then drains the upload
-    /// queue. Overlapping calls coalesce into one extra pass.
+    /// HealthKit counts a wake as delivered only when `completion` runs, and
+    /// stops background delivery after three misses. So completion follows
+    /// the HealthKit and export work alone; uploads run afterwards under
+    /// their own background-task time and deadline.
+    private func handleWake(_ completion: @escaping () -> Void) async {
+        await sync()
+        completion()
+        await GPXUploader.shared.uploadPendingInBackgroundTask()
+    }
+
+    /// Exports workouts added since the last sync. Does not upload; callers
+    /// start uploads separately. Overlapping calls coalesce into one extra
+    /// pass.
     func sync() async {
         if isSyncing {
             syncRequested = true
@@ -89,12 +115,18 @@ final class BackgroundSyncManager {
             syncRequested = false
             await syncOnce()
         } while syncRequested
-
-        await GPXUploader.shared.uploadPending()
     }
 
     private func syncOnce() async {
-        let storedAnchor = loadAnchor()
+        let storedAnchor: HKQueryAnchor?
+        do {
+            storedAnchor = try loadAnchor()
+        } catch {
+            // Never re-baseline silently: that would skip every workout added
+            // since the last good anchor. Keep the stored anchor untouched.
+            record("Sync skipped: the saved sync anchor could not be read (\(error.localizedDescription))")
+            return
+        }
         let result: (workouts: [HKWorkout], deleted: [UUID], anchor: HKQueryAnchor?)
         do {
             result = try await healthKitManager.fetchCyclingWorkouts(since: storedAnchor)
@@ -112,13 +144,25 @@ final class BackgroundSyncManager {
                 .map(\.uuid)
         )
         var candidates = result.workouts.filter { selected.contains($0.uuid) }
-        let retryWorkouts = await loadRetryWorkouts(excluding: selected)
-        candidates.append(contentsOf: retryWorkouts.filter { !exportedStore.ledger.contains($0.uuid) })
+        let previousRetry = loadRetryList()
+        let retryLookup = await loadRetryWorkouts(previousRetry.keys.filter { !selected.contains($0) })
+        candidates.append(contentsOf: retryLookup.workouts.filter { !exportedStore.ledger.contains($0.uuid) })
 
-        var retry: [UUID] = []
+        let now = Date()
+        var retry: [UUID: Date] = [:]
+        // A lookup that failed is not a deletion: keep it for the next wake.
+        for uuid in retryLookup.unresolved {
+            if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[uuid], now: now) {
+                retry[uuid] = firstSeen
+            }
+        }
         var exported = 0
         var lastError: String?
         for workout in candidates {
+            // A manual export may have run while this loop awaited.
+            if exportedStore.ledger.contains(workout.uuid) {
+                continue
+            }
             let filename: String?
             do {
                 filename = try await workoutExporter.export(workout)
@@ -131,15 +175,15 @@ final class BackgroundSyncManager {
                 exported += 1
                 exportedStore.markExported(WorkoutCandidate(uuid: workout.uuid, startDate: workout.startDate))
                 GPXUploader.shared.enqueue(filename)
-            } else if Date().timeIntervalSince(workout.endDate) < Self.retryWindow {
+            } else if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
                 // No route yet, or the export failed: try again next wake.
-                retry.append(workout.uuid)
+                retry[workout.uuid] = firstSeen
             }
         }
 
         // The anchor advances only after every candidate was exported or
         // queued for retry, so a crash mid-loop re-delivers them.
-        saveRetryUUIDs(retry)
+        saveRetryList(retry)
         if let anchor = result.anchor {
             saveAnchor(anchor)
         }
@@ -155,28 +199,58 @@ final class BackgroundSyncManager {
         record(summary)
     }
 
-    private func loadRetryWorkouts(excluding: Set<UUID>) async -> [HKWorkout] {
-        let uuids = (UserDefaults.standard.stringArray(forKey: Self.retryKey) ?? [])
-            .compactMap(UUID.init(uuidString:))
-            .filter { !excluding.contains($0) }
-
+    /// Looks up retry-list workouts. A deleted workout comes back as neither
+    /// and drops off the list; a failed lookup comes back as unresolved.
+    private func loadRetryWorkouts(_ uuids: [UUID]) async -> (workouts: [HKWorkout], unresolved: [UUID]) {
         var workouts: [HKWorkout] = []
+        var unresolved: [UUID] = []
         for uuid in uuids {
-            // A deleted workout returns nil and drops out of the retry list.
-            if let workout = try? await healthKitManager.fetchWorkout(uuid: uuid) {
-                workouts.append(workout)
+            do {
+                if let workout = try await healthKitManager.fetchWorkout(uuid: uuid) {
+                    workouts.append(workout)
+                }
+            } catch {
+                unresolved.append(uuid)
             }
         }
-        return workouts
+        return (workouts, unresolved)
     }
 
-    private func saveRetryUUIDs(_ uuids: [UUID]) {
-        UserDefaults.standard.set(uuids.map(\.uuidString), forKey: Self.retryKey)
+    private func loadRetryList() -> [UUID: Date] {
+        var list: [UUID: Date] = [:]
+        let stored = UserDefaults.standard.dictionary(forKey: Self.retryKey) as? [String: Date] ?? [:]
+        for (key, firstSeen) in stored {
+            if let uuid = UUID(uuidString: key) {
+                list[uuid] = firstSeen
+            }
+        }
+        // The draft stored a plain array with no dates; its entries start
+        // their window now.
+        if let legacy = UserDefaults.standard.stringArray(forKey: Self.legacyRetryKey) {
+            for uuid in legacy.compactMap(UUID.init(uuidString:)) where list[uuid] == nil {
+                list[uuid] = Date()
+            }
+        }
+        return list
     }
 
-    private func loadAnchor() -> HKQueryAnchor? {
+    private func saveRetryList(_ list: [UUID: Date]) {
+        var stored: [String: Date] = [:]
+        for (uuid, firstSeen) in list {
+            stored[uuid.uuidString] = firstSeen
+        }
+        UserDefaults.standard.set(stored, forKey: Self.retryKey)
+        UserDefaults.standard.removeObject(forKey: Self.legacyRetryKey)
+    }
+
+    /// nil means no anchor was ever saved (the first run). A stored anchor
+    /// that fails to decode throws instead of reading as "first run".
+    private func loadAnchor() throws -> HKQueryAnchor? {
         guard let data = UserDefaults.standard.data(forKey: Self.anchorKey) else { return nil }
-        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data)
+        guard let anchor = try NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data) else {
+            throw AnchorError.undecodable
+        }
+        return anchor
     }
 
     private func saveAnchor(_ anchor: HKQueryAnchor) {
@@ -191,5 +265,13 @@ final class BackgroundSyncManager {
     private func record(_ message: String) {
         let stamp = Date().formatted(date: .abbreviated, time: .shortened)
         UserDefaults.standard.set("\(stamp): \(message)", forKey: Self.lastResultKey)
+    }
+}
+
+private enum AnchorError: LocalizedError {
+    case undecodable
+
+    var errorDescription: String? {
+        "The stored data is not a query anchor."
     }
 }

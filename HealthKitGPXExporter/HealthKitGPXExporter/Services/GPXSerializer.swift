@@ -24,7 +24,8 @@ struct GPXZoneSummary: Equatable {
 }
 
 struct GPXWorkoutMetadata: Equatable {
-    /// HKWorkout.uuid: stable across re-exports, so the server can dedupe.
+    /// HKWorkout.uuid: the same across re-exports of one workout. The same
+    /// ride recorded by two apps has two UUIDs.
     var workoutUUID: UUID?
     var source: GPXWorkoutSource?
     var zoneSummaries: [GPXZoneSummary] = []
@@ -32,7 +33,8 @@ struct GPXWorkoutMetadata: Equatable {
 
 struct GPXSerializer {
     /// Namespace of this app's `<metadata><extensions>` elements. The server
-    /// parses these, so renaming an element or this URI is a format change.
+    /// may read these (its ride matching is time-based today), so renaming an
+    /// element or this URI is a format change.
     static let extensionNamespace = "https://github.com/minghsuy/healthkit-gpx-exporter/gpx/v1"
 
     private let dateFormatter: ISO8601DateFormatter = {
@@ -165,8 +167,22 @@ struct GPXSerializer {
         attributes.map { "\($0.0)=\"\(escapeXML($0.1))\"" }.joined(separator: " ")
     }
 
+    /// Also drops characters XML 1.0 forbids even when escaped: controls
+    /// below U+0020 other than tab, LF and CR, and U+FFFE/U+FFFF. One in a
+    /// device or app name would make the whole file unparseable.
     private func escapeXML(_ string: String) -> String {
-        string
+        var scalars = String.UnicodeScalarView()
+        scalars.append(contentsOf: string.unicodeScalars.filter { scalar in
+            switch scalar.value {
+            case 0x9, 0xA, 0xD:
+                return true
+            case 0x0..<0x20, 0xFFFE, 0xFFFF:
+                return false
+            default:
+                return true
+            }
+        })
+        return String(scalars)
             .replacingOccurrences(of: "&", with: "&amp;")
             .replacingOccurrences(of: "<", with: "&lt;")
             .replacingOccurrences(of: ">", with: "&gt;")

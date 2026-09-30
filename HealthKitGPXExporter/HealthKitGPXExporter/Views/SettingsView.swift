@@ -106,6 +106,12 @@ struct SettingsView: View {
                         .foregroundStyle(.secondary)
                 }
 
+                if GPXUploader.shared.authenticationFailed {
+                    Text("Authentication failed (HTTP 401/403): check the token. Uploads retry on the next launch or wake.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
                 let failedUploads = GPXUploader.shared.failedFilenames
                 if !failedUploads.isEmpty {
                     VStack(alignment: .leading, spacing: 4) {
@@ -136,6 +142,12 @@ struct SettingsView: View {
                 Text(BackgroundSyncManager.shared.lastResult ?? "No background sync yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if let loadError = ExportedWorkoutStore.shared.loadError {
+                    Text(loadError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
 
                 if let saveError = ExportedWorkoutStore.shared.lastSaveError {
                     Text(saveError)

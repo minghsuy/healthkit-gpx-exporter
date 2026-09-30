@@ -28,8 +28,10 @@ when iCloud Drive is off. The app has no third-party dependencies.
   </metadata>
   ```
 
-  `hkx:workoutUUID` is the HealthKit workout UUID; it stays the same when a
-  workout is exported again, so the server can dedupe on it.
+  `hkx:workoutUUID` is the HealthKit workout UUID. It stays the same when a
+  workout is exported again, so a server may use it to spot re-exports. The
+  same ride recorded by two apps (say a watch and a bike app) has two UUIDs;
+  matching those is the server's job, by overlapping time, not by UUID.
   The `creator` attribute is now `HealthKitGPXExporter/2.0`; match on the
   `HealthKitGPXExporter` prefix.
 - **Automatic export.** HealthKit background delivery wakes the app when a
@@ -40,16 +42,21 @@ when iCloud Drive is off. The app has no third-party dependencies.
   never exported twice automatically. On the very first run the app only
   records a starting point and exports nothing; use "Export All New" for
   history. A workout whose route is not in Health yet is retried when the
-  route is saved, and on later wakes, for up to seven days.
+  route is saved, and on later wakes, for up to seven days after the app
+  first sees it.
 - **Optional upload, off by default.** In Settings you can turn on upload,
   enter an `https://` server URL, and optionally save a bearer token, which is
   kept in the Keychain. Each exported file is then also POSTed as
   `multipart/form-data` (field `gpx`) to `{server URL}/api/v1/rides/gpx`.
   Data goes only to the URL you enter. Turning upload on does not send
   earlier exports; only exports made from then on are queued. Failed uploads
-  retry on the next launch or background wake. A file the server refuses with
-  a 4xx (other than 408 or 429) five times is listed in Settings as failed and
-  stays in the export folder.
+  retry on the next launch or background wake; each pass stops starting new
+  uploads after about 20 seconds. A 401 or 403 stops the pass and shows
+  "Authentication failed" in Settings. A file the server refuses with any
+  other 4xx (except 408 or 429) five times is listed in Settings as failed
+  and stays in the export folder. The source name in the GPX can be a
+  personal device name, such as "Alex's Apple Watch", so it travels with
+  every uploaded file.
 - **Heart-rate and power zones (iOS 27).** On iOS 27 the time in each zone
   from `HKWorkout.zoneGroupsByType` is written as `<hkx:zones>`. This code is
   compiled only with Xcode 27 (Swift 6.4) or later.

@@ -71,6 +71,10 @@ final class ExportedWorkoutStore {
     private(set) var ledger: ExportLedger
     /// Shown in Settings; a failed save means a later sync may re-export.
     private(set) var lastSaveError: String?
+    /// Set when the file exists but cannot be read or decoded. Saves are then
+    /// refused, so the unreadable file is kept for inspection rather than
+    /// replaced by a near-empty history.
+    private(set) var loadError: String?
 
     private let fileURL: URL?
 
@@ -78,15 +82,22 @@ final class ExportedWorkoutStore {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
         fileURL = directory?.appendingPathComponent("exported-workouts.json")
 
-        if let fileURL,
-           let data = try? Data(contentsOf: fileURL),
-           let stored = try? JSONDecoder().decode(ExportLedger.self, from: data) {
-            ledger = stored
-        } else {
-            // First v2 launch: carry v1's "last export" time over as the cutoff.
+        guard let fileURL, FileManager.default.fileExists(atPath: fileURL.path) else {
+            // No file yet, which means the first v2 launch: carry v1's
+            // "last export" time over as the cutoff.
             ledger = ExportLedger(
                 legacyCutoff: UserDefaults.standard.object(forKey: Self.lastExportDateKey) as? Date
             )
+            return
+        }
+
+        do {
+            let data = try Data(contentsOf: fileURL)
+            ledger = try JSONDecoder().decode(ExportLedger.self, from: data)
+        } catch {
+            // Not the first launch, so the v1 cutoff must not be applied.
+            ledger = ExportLedger()
+            loadError = "Export history could not be read, and will not be overwritten: \(error.localizedDescription)"
         }
     }
 
@@ -101,14 +112,21 @@ final class ExportedWorkoutStore {
         save()
     }
 
-    /// "Reset Export History": every workout becomes new again.
+    /// "Reset Export History": every workout becomes new again. This is the
+    /// one save allowed to replace an unreadable file, since the user asked
+    /// for the history to be cleared.
     func reset() {
         ledger = ExportLedger()
+        loadError = nil
         save()
     }
 
     private func save() {
         guard let fileURL else { return }
+        guard loadError == nil else {
+            lastSaveError = "Export history not saved: the existing file could not be read"
+            return
+        }
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),

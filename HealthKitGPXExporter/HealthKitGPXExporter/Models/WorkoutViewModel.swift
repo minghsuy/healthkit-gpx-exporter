@@ -75,11 +75,12 @@ class WorkoutViewModel: ObservableObject {
             healthKitAuthorized = true
             await fetchWorkouts()
             // The observer needs authorization to deliver; start() is
-            // idempotent. sync() also retries queued uploads, and may export
-            // workouts the list is showing as new.
+            // idempotent. sync() may export workouts the list is showing as
+            // new; it does not upload, so the queue is retried here.
             BackgroundSyncManager.shared.start()
             await BackgroundSyncManager.shared.sync()
             refreshExportedFlags()
+            await GPXUploader.shared.uploadPendingInBackgroundTask()
         } catch {
             errorMessage = "HealthKit access required. Please enable in Settings."
         }
@@ -123,15 +124,23 @@ class WorkoutViewModel: ObservableObject {
     func exportAllNew() async {
         let toExport = newWorkouts
         guard !toExport.isEmpty else { return }
-        await exportWorkouts(toExport)
+        await exportWorkouts(toExport, skippingExported: true)
     }
 
-    private func exportWorkouts(_ workoutsToExport: [CyclingWorkout]) async {
+    /// `skippingExported` re-checks the export record before each workout,
+    /// because a background sync can export one while this loop awaits.
+    /// "Export Selected" passes false: re-exporting a chosen workout is the
+    /// user's call.
+    private func exportWorkouts(_ workoutsToExport: [CyclingWorkout], skippingExported: Bool = false) async {
         isExporting = true
         exportProgress = (0, workoutsToExport.count)
         var exportedCount = 0
 
         for cyclingWorkout in workoutsToExport {
+            if skippingExported, exportedStore.ledger.contains(cyclingWorkout.id) {
+                exportProgress.current += 1
+                continue
+            }
             do {
                 guard let filename = try await workoutExporter.export(cyclingWorkout.workout) else {
                     exportProgress.current += 1
@@ -160,7 +169,7 @@ class WorkoutViewModel: ObservableObject {
         }
 
         isExporting = false
-        await GPXUploader.shared.uploadPending()
+        await GPXUploader.shared.uploadPendingInBackgroundTask()
     }
 
     func toggleSelection(for workout: CyclingWorkout) {

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// UserDefaults keys for the opt-in upload. SettingsView binds the same keys
 /// with @AppStorage; upload stays off until the user turns it on.
@@ -33,12 +36,16 @@ enum UploadDecision: Equatable {
     case retry(rejections: Int)
     /// Stop retrying; the file stays on disk and is listed as failed.
     case giveUp
+    /// 401/403: the token is wrong for every file, so stop the pass without
+    /// counting a refusal against this file.
+    case authenticationFailed
 }
 
-/// Plain-Swift retry rule, unit-tested. A 4xx other than 408 (timeout) and
-/// 429 (rate limit) means the server refused this file, so it gets a few
-/// tries in case the server was mid-deploy, then gives up. Everything else
-/// (408, 429, 5xx, no answer) retries without limit.
+/// Plain-Swift retry rule, unit-tested. 401/403 stop the pass uncounted. Any
+/// other 4xx except 408 (timeout) and 429 (rate limit) means the server
+/// refused this file, so it gets a few tries in case the server was
+/// mid-deploy, then gives up. Everything else (408, 429, 5xx, no answer)
+/// retries without limit.
 enum UploadRetryPolicy {
     static let maxRejections = 5
 
@@ -49,6 +56,9 @@ enum UploadRetryPolicy {
         case .httpStatus(let code):
             if (200..<300).contains(code) {
                 return .done
+            }
+            if code == 401 || code == 403 {
+                return .authenticationFailed
             }
             if (400..<500).contains(code), code != 408, code != 429 {
                 let count = rejections + 1
@@ -68,10 +78,18 @@ final class GPXUploader {
     private static let queueKey = "uploadQueue"
     private static let failedKey = "failedUploads"
     private static let lastResultKey = "lastUploadResult"
+    private static let authFailedKey = "uploadAuthenticationFailed"
+    /// Stop starting uploads this long after a pass begins. A background
+    /// task gets roughly 30 seconds before iOS expires it.
+    private static let passBudget: TimeInterval = 20
+    private static let requestTimeout: TimeInterval = 15
 
     private let fileExporter = FileExporter()
     private let tokenStore = KeychainTokenStore()
     private var isUploading = false
+    #if canImport(UIKit)
+    private var backgroundTask: UIBackgroundTaskIdentifier = .invalid
+    #endif
 
     var pending: [PendingUpload] {
         guard let data = UserDefaults.standard.data(forKey: Self.queueKey) else { return [] }
@@ -88,6 +106,11 @@ final class GPXUploader {
         UserDefaults.standard.string(forKey: Self.lastResultKey)
     }
 
+    /// Set by a 401/403, cleared by the next successful upload.
+    var authenticationFailed: Bool {
+        UserDefaults.standard.bool(forKey: Self.authFailedKey)
+    }
+
     func enqueue(_ filename: String) {
         guard UploadSettings.isEnabled else { return }
         var queue = pending
@@ -97,15 +120,44 @@ final class GPXUploader {
         }
     }
 
-    func uploadPending() async {
+    /// Runs one upload pass under a UIKit background task, so it can finish
+    /// after the app leaves the foreground or after a HealthKit wake has
+    /// been completed. Files not reached by the deadline stay queued.
+    func uploadPendingInBackgroundTask() async {
+        guard UploadSettings.isEnabled, !isUploading, !pending.isEmpty else { return }
+        #if canImport(UIKit)
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "GPX upload") {
+            MainActor.assumeIsolated {
+                GPXUploader.shared.endBackgroundTask()
+            }
+        }
+        defer { endBackgroundTask() }
+        #endif
+        await uploadPending(until: Date().addingTimeInterval(Self.passBudget))
+    }
+
+    #if canImport(UIKit)
+    private func endBackgroundTask() {
+        guard backgroundTask != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(backgroundTask)
+        backgroundTask = .invalid
+    }
+    #endif
+
+    private func uploadPending(until deadline: Date) async {
         guard UploadSettings.isEnabled, !isUploading else { return }
         isUploading = true
         defer { isUploading = false }
 
         for item in pending {
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 1 else {
+                record("Upload pass stopped at its time limit; \(pending.count) file(s) still queued")
+                return
+            }
             let outcome: UploadOutcome
             do {
-                outcome = try await upload(item.filename)
+                outcome = try await upload(item.filename, timeout: min(Self.requestTimeout, remaining))
             } catch GPXUploadError.fileMissing {
                 update(item, with: nil)
                 record("Dropped \(item.filename): file no longer exists")
@@ -122,6 +174,7 @@ final class GPXUploader {
             switch decision {
             case .done:
                 update(item, with: nil)
+                UserDefaults.standard.set(false, forKey: Self.authFailedKey)
                 record("Uploaded \(item.filename)")
             case .retry(let rejections):
                 update(item, with: PendingUpload(filename: item.filename, rejections: rejections))
@@ -130,6 +183,10 @@ final class GPXUploader {
                 update(item, with: nil)
                 markFailed(item.filename)
                 record("Upload of \(item.filename) failed for good: \(describe(outcome))")
+            case .authenticationFailed:
+                UserDefaults.standard.set(true, forKey: Self.authFailedKey)
+                record("Upload stopped: authentication failed (\(describe(outcome))); check the token")
+                return
             }
 
             if outcome == .transportError {
@@ -140,7 +197,7 @@ final class GPXUploader {
         }
     }
 
-    private func upload(_ filename: String) async throws -> UploadOutcome {
+    private func upload(_ filename: String, timeout: TimeInterval) async throws -> UploadOutcome {
         let fileURL = try fileExporter.getExportDirectory().appendingPathComponent(filename)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw GPXUploadError.fileMissing
@@ -155,7 +212,7 @@ final class GPXUploader {
             boundary: "Boundary-\(UUID().uuidString)"
         )
         var request = upload.request
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeout
 
         let (_, response) = try await URLSession.shared.upload(for: request, from: upload.body)
         guard let http = response as? HTTPURLResponse else {
