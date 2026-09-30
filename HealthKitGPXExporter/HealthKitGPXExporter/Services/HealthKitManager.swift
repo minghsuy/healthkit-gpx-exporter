@@ -52,9 +52,12 @@ class HealthKitManager {
         }
     }
 
-    /// Cycling workouts added to HealthKit since `anchor`, plus the anchor to
-    /// persist for the next call. A nil anchor returns every cycling workout.
-    func fetchCyclingWorkouts(since anchor: HKQueryAnchor?) async throws -> (workouts: [HKWorkout], anchor: HKQueryAnchor?) {
+    /// Cycling workouts added to and deleted from HealthKit since `anchor`,
+    /// plus the anchor to persist for the next call. A nil anchor returns
+    /// every cycling workout.
+    func fetchCyclingWorkouts(
+        since anchor: HKQueryAnchor?
+    ) async throws -> (workouts: [HKWorkout], deleted: [UUID], anchor: HKQueryAnchor?) {
         let cyclingPredicate = HKQuery.predicateForWorkouts(with: .cycling)
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -63,13 +66,14 @@ class HealthKitManager {
                 predicate: cyclingPredicate,
                 anchor: anchor,
                 limit: HKObjectQueryNoLimit
-            ) { _, samples, _, newAnchor, error in
+            ) { _, samples, deletedObjects, newAnchor, error in
                 if let error {
                     continuation.resume(throwing: error)
                     return
                 }
                 let workouts = (samples as? [HKWorkout]) ?? []
-                continuation.resume(returning: (workouts, newAnchor))
+                let deleted = (deletedObjects ?? []).map(\.uuid)
+                continuation.resume(returning: (workouts, deleted, newAnchor))
             }
             healthStore.execute(query)
         }
@@ -95,16 +99,18 @@ class HealthKitManager {
         }
     }
 
-    /// Starts a long-running observer for cycling workouts. HealthKit calls
-    /// `onUpdate` on a background queue; the handler must eventually call the
-    /// completion it receives, or HealthKit backs off and, after three misses,
-    /// stops background delivery.
-    func observeCyclingWorkouts(
+    /// Starts a long-running observer. HealthKit calls `onUpdate` on a
+    /// background queue; the handler must eventually call the completion it
+    /// receives, or HealthKit backs off and, after three misses, stops
+    /// background delivery.
+    func observe(
+        _ sampleType: HKSampleType,
+        predicate: NSPredicate?,
         onUpdate: @escaping @Sendable (_ completion: @escaping HKObserverQueryCompletionHandler) -> Void
     ) -> HKObserverQuery {
         let query = HKObserverQuery(
-            sampleType: HKObjectType.workoutType(),
-            predicate: HKQuery.predicateForWorkouts(with: .cycling)
+            sampleType: sampleType,
+            predicate: predicate
         ) { _, completionHandler, error in
             if error != nil {
                 completionHandler()
@@ -118,8 +124,8 @@ class HealthKitManager {
 
     /// Needs the com.apple.developer.healthkit.background-delivery
     /// entitlement; without it this fails with errorAuthorizationDenied.
-    func enableWorkoutBackgroundDelivery() async throws {
-        try await healthStore.enableBackgroundDelivery(for: HKObjectType.workoutType(), frequency: .immediate)
+    func enableBackgroundDelivery(for type: HKObjectType) async throws {
+        try await healthStore.enableBackgroundDelivery(for: type, frequency: .immediate)
     }
 
     /// Plain-value metadata for the GPX: the recording app and, on iOS 27,

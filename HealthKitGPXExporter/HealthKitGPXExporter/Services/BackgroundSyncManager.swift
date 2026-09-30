@@ -1,24 +1,25 @@
 import Foundation
 import HealthKit
 
-/// Exports new cycling workouts automatically: an HKObserverQuery with
-/// background delivery wakes the app, and an HKAnchoredObjectQuery returns
-/// the workouts added since the persisted anchor.
+/// Exports new cycling workouts automatically: HKObserverQuery background
+/// delivery wakes the app, and an HKAnchoredObjectQuery returns the workouts
+/// added since the persisted anchor.
 final class BackgroundSyncManager {
     static let shared = BackgroundSyncManager()
 
     private static let anchorKey = "workoutSyncAnchor"
     private static let retryKey = "workoutSyncRetryUUIDs"
     private static let lastResultKey = "lastBackgroundSyncResult"
-    // Same key WorkoutViewModel uses for "Export All New": a background export
-    // advances it, so the button does not offer those workouts again.
+    // Display only ("Last Export" in Settings); which workouts are exported
+    // is tracked by UUID in ExportedWorkoutStore.
     private static let lastExportDateKey = "lastExportDate"
     // A workout whose route has not landed after this long is given up on.
     private static let retryWindow: TimeInterval = 7 * 24 * 3600
 
     private let healthKitManager = HealthKitManager()
     private lazy var workoutExporter = WorkoutExporter(healthKitManager: healthKitManager)
-    private var observerQuery: HKObserverQuery?
+    private let exportedStore = ExportedWorkoutStore.shared
+    private var workoutObserver: HKObserverQuery?
     private var isSyncing = false
     private var syncRequested = false
 
@@ -32,8 +33,11 @@ final class BackgroundSyncManager {
     func start() {
         guard HKHealthStore.isHealthDataAvailable() else { return }
 
-        if observerQuery == nil {
-            observerQuery = healthKitManager.observeCyclingWorkouts { completion in
+        if workoutObserver == nil {
+            workoutObserver = healthKitManager.observe(
+                HKObjectType.workoutType(),
+                predicate: HKQuery.predicateForWorkouts(with: .cycling)
+            ) { completion in
                 Task { @MainActor in
                     await BackgroundSyncManager.shared.sync()
                     completion()
@@ -43,7 +47,7 @@ final class BackgroundSyncManager {
 
         Task {
             do {
-                try await healthKitManager.enableWorkoutBackgroundDelivery()
+                try await healthKitManager.enableBackgroundDelivery(for: HKObjectType.workoutType())
             } catch {
                 record("Background delivery not enabled: \(error.localizedDescription)")
             }
@@ -70,7 +74,7 @@ final class BackgroundSyncManager {
 
     private func syncOnce() async {
         let storedAnchor = loadAnchor()
-        let result: (workouts: [HKWorkout], anchor: HKQueryAnchor?)
+        let result: (workouts: [HKWorkout], deleted: [UUID], anchor: HKQueryAnchor?)
         do {
             result = try await healthKitManager.fetchCyclingWorkouts(since: storedAnchor)
         } catch {
@@ -78,23 +82,17 @@ final class BackgroundSyncManager {
             return
         }
 
-        let lastExport = UserDefaults.standard.object(forKey: Self.lastExportDateKey) as? Date
-        var candidates: [HKWorkout]
-        if storedAnchor == nil && lastExport == nil {
-            // First run with no export history: take a baseline and export
-            // nothing, so the whole history is not written in one wake.
-            // "Export All New" still offers it.
-            candidates = []
-        } else {
-            // Same "new" rule as Export All New.
-            candidates = result.workouts.filter { workout in
-                guard let lastExport else { return true }
-                return workout.startDate > lastExport
-            }
-        }
-        let alreadyCandidates = Set(candidates.map(\.uuid))
-        let retryWorkouts = await loadRetryWorkouts(excluding: alreadyCandidates)
-        candidates.append(contentsOf: retryWorkouts)
+        exportedStore.removeDeleted(result.deleted)
+
+        let added = result.workouts.map { WorkoutCandidate(uuid: $0.uuid, startDate: $0.startDate) }
+        let selected = Set(
+            exportedStore.ledger
+                .newForBackgroundExport(added: added, hasStoredAnchor: storedAnchor != nil)
+                .map(\.uuid)
+        )
+        var candidates = result.workouts.filter { selected.contains($0.uuid) }
+        let retryWorkouts = await loadRetryWorkouts(excluding: selected)
+        candidates.append(contentsOf: retryWorkouts.filter { !exportedStore.ledger.contains($0.uuid) })
 
         var retry: [UUID] = []
         var exported = 0
@@ -110,6 +108,7 @@ final class BackgroundSyncManager {
 
             if let filename {
                 exported += 1
+                exportedStore.markExported(WorkoutCandidate(uuid: workout.uuid, startDate: workout.startDate))
                 GPXUploader.shared.enqueue(filename)
             } else if Date().timeIntervalSince(workout.endDate) < Self.retryWindow {
                 // No route yet, or the export failed: try again next wake.
@@ -126,7 +125,9 @@ final class BackgroundSyncManager {
         if exported > 0 {
             UserDefaults.standard.set(Date(), forKey: Self.lastExportDateKey)
         }
-        var summary = "Checked \(result.workouts.count) new workout(s), exported \(exported), \(retry.count) to retry"
+        var summary = storedAnchor == nil
+            ? "Baseline taken; \(result.workouts.count) existing workout(s) left for Export All New"
+            : "Checked \(result.workouts.count) new workout(s), exported \(exported), \(retry.count) to retry"
         if let lastError {
             summary += "; last error: \(lastError)"
         }

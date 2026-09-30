@@ -39,10 +39,13 @@ class WorkoutViewModel: ObservableObject {
     @Published var successMessage: String?
     @Published var healthKitAuthorized = false
 
+    // Display only ("Last Export" in Settings). Which workouts are new is
+    // decided by ExportedWorkoutStore, by UUID.
     private static let lastExportDateKey = "lastExportDate"
 
     private let healthKitManager = HealthKitManager()
     private lazy var workoutExporter = WorkoutExporter(healthKitManager: healthKitManager)
+    private let exportedStore = ExportedWorkoutStore.shared
 
     var lastExportDate: Date? {
         get { UserDefaults.standard.object(forKey: Self.lastExportDateKey) as? Date }
@@ -53,8 +56,13 @@ class WorkoutViewModel: ObservableObject {
     }
 
     var newWorkoutCount: Int {
-        guard let lastExport = lastExportDate else { return workouts.count }
-        return workouts.filter { $0.date > lastExport }.count
+        newWorkouts.count
+    }
+
+    private var newWorkouts: [CyclingWorkout] {
+        let candidates = workouts.map { WorkoutCandidate(uuid: $0.id, startDate: $0.date) }
+        let newIDs = Set(exportedStore.ledger.newForManualExport(candidates).map(\.uuid))
+        return workouts.filter { newIDs.contains($0.id) }
     }
 
     var selectedCount: Int {
@@ -67,11 +75,11 @@ class WorkoutViewModel: ObservableObject {
             healthKitAuthorized = true
             await fetchWorkouts()
             // The observer needs authorization to deliver; start() is
-            // idempotent. sync() also retries queued uploads, and may move
-            // lastExportDate, which the "Export All New" count reads.
+            // idempotent. sync() also retries queued uploads, and may export
+            // workouts the list is showing as new.
             BackgroundSyncManager.shared.start()
             await BackgroundSyncManager.shared.sync()
-            objectWillChange.send()
+            refreshExportedFlags()
         } catch {
             errorMessage = "HealthKit access required. Please enable in Settings."
         }
@@ -95,7 +103,8 @@ class WorkoutViewModel: ObservableObject {
                     date: workout.startDate,
                     distance: distance,
                     duration: workout.duration,
-                    averageHeartRate: avgHR
+                    averageHeartRate: avgHR,
+                    isExported: exportedStore.ledger.contains(workout.uuid)
                 ))
             }
 
@@ -112,12 +121,9 @@ class WorkoutViewModel: ObservableObject {
     }
 
     func exportAllNew() async {
-        let newWorkouts = workouts.filter { workout in
-            guard let lastExport = lastExportDate else { return true }
-            return workout.date > lastExport
-        }
-        guard !newWorkouts.isEmpty else { return }
-        await exportWorkouts(newWorkouts)
+        let toExport = newWorkouts
+        guard !toExport.isEmpty else { return }
+        await exportWorkouts(toExport)
     }
 
     private func exportWorkouts(_ workoutsToExport: [CyclingWorkout]) async {
@@ -132,6 +138,9 @@ class WorkoutViewModel: ObservableObject {
                     continue
                 }
 
+                exportedStore.markExported(
+                    WorkoutCandidate(uuid: cyclingWorkout.id, startDate: cyclingWorkout.date)
+                )
                 GPXUploader.shared.enqueue(filename)
                 exportedCount += 1
                 exportProgress.current += 1
@@ -162,8 +171,15 @@ class WorkoutViewModel: ObservableObject {
 
     func resetLastExportDate() {
         UserDefaults.standard.removeObject(forKey: Self.lastExportDateKey)
+        exportedStore.reset()
         for index in workouts.indices {
             workouts[index].isExported = false
+        }
+    }
+
+    private func refreshExportedFlags() {
+        for index in workouts.indices {
+            workouts[index].isExported = exportedStore.ledger.contains(workouts[index].id)
         }
     }
 }
