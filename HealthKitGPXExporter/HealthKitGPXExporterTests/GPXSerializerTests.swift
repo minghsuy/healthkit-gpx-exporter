@@ -49,6 +49,18 @@ struct GPXSerializerTests {
         #expect(xml.contains("xmlns:hkx=\"\(GPXSerializer.extensionNamespace)\""))
     }
 
+    @Test func workoutUUIDIsWrittenToExtensions() throws {
+        let uuid = try #require(UUID(uuidString: "0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"))
+        let metadata = GPXWorkoutMetadata(workoutUUID: uuid)
+        let xml = GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [], metadata: metadata)
+        let block = try metadataBlock(xml)
+
+        #expect(block.contains("<extensions>"))
+        #expect(block.contains("<hkx:workoutUUID>0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9</hkx:workoutUUID>"))
+        #expect(!block.contains("<hkx:source>"))
+        #expect(!block.contains("<desc>"))
+    }
+
     @Test func metadataChildrenFollowGPXSchemaOrder() throws {
         let metadata = GPXWorkoutMetadata(
             source: GPXWorkoutSource(name: "Workout", bundleIdentifier: "com.apple.health")
@@ -97,7 +109,9 @@ struct GPXSerializerTests {
     }
 
     @Test func outputIsWellFormedXMLWithNamespacedSource() throws {
+        let uuid = UUID()
         let metadata = GPXWorkoutMetadata(
+            workoutUUID: uuid,
             source: GPXWorkoutSource(name: "A & B", bundleIdentifier: "com.example.app"),
             zoneSummaries: [
                 GPXZoneSummary(type: "cyclingPower", unit: "W", zones: [
@@ -122,6 +136,7 @@ struct GPXSerializerTests {
         let namespace = GPXSerializer.extensionNamespace
         #expect(collector.text["\(namespace)|name"] == "A & B")
         #expect(collector.text["\(namespace)|bundleIdentifier"] == "com.example.app")
+        #expect(collector.text["\(namespace)|workoutUUID"] == uuid.uuidString)
         #expect(collector.elements.filter { $0 == "http://www.topografix.com/GPX/1/1|trkpt" }.count == 2)
     }
 }

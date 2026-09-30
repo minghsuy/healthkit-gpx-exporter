@@ -24,6 +24,8 @@ struct GPXZoneSummary: Equatable {
 }
 
 struct GPXWorkoutMetadata: Equatable {
+    /// HKWorkout.uuid: stable across re-exports, so the server can dedupe.
+    var workoutUUID: UUID?
     var source: GPXWorkoutSource?
     var zoneSummaries: [GPXZoneSummary] = []
 }
@@ -112,11 +114,15 @@ struct GPXSerializer {
     }
 
     private func metadataExtensions(_ metadata: GPXWorkoutMetadata?) -> String {
-        guard let metadata, metadata.source != nil || !metadata.zoneSummaries.isEmpty else {
+        guard let metadata,
+              metadata.workoutUUID != nil || metadata.source != nil || !metadata.zoneSummaries.isEmpty else {
             return ""
         }
 
         var xml = "\n    <extensions>"
+        if let workoutUUID = metadata.workoutUUID {
+            xml += "\n      \(xmlTag("hkx:workoutUUID", value: workoutUUID.uuidString))"
+        }
         if let source = metadata.source {
             xml += "\n      <hkx:source>"
             xml += "\n        \(xmlTag("hkx:name", value: source.name))"

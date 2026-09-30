@@ -128,11 +128,12 @@ class HealthKitManager {
         try await healthStore.enableBackgroundDelivery(for: type, frequency: .immediate)
     }
 
-    /// Plain-value metadata for the GPX: the recording app and, on iOS 27,
-    /// time in heart-rate and power zones.
+    /// Plain-value metadata for the GPX: the workout UUID, the recording app
+    /// and, on iOS 27, time in heart-rate and power zones.
     func metadata(for workout: HKWorkout) -> GPXWorkoutMetadata {
         let source = workout.sourceRevision.source
         var metadata = GPXWorkoutMetadata(
+            workoutUUID: workout.uuid,
             source: GPXWorkoutSource(name: source.name, bundleIdentifier: source.bundleIdentifier)
         )
         #if compiler(>=6.4)

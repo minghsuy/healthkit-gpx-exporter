@@ -19,6 +19,7 @@ when iCloud Drive is off. The app has no third-party dependencies.
     <desc>Recorded by Example Recorder (com.example.recorder)</desc>
     <time>2026-09-30T19:06:00Z</time>
     <extensions>
+      <hkx:workoutUUID>0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9</hkx:workoutUUID>
       <hkx:source>
         <hkx:name>Example Recorder</hkx:name>
         <hkx:bundleIdentifier>com.example.recorder</hkx:bundleIdentifier>
@@ -27,6 +28,8 @@ when iCloud Drive is off. The app has no third-party dependencies.
   </metadata>
   ```
 
+  `hkx:workoutUUID` is the HealthKit workout UUID; it stays the same when a
+  workout is exported again, so the server can dedupe on it.
   The `creator` attribute is now `HealthKitGPXExporter/2.0`; match on the
   `HealthKitGPXExporter` prefix.
 - **Automatic export.** HealthKit background delivery wakes the app when a
