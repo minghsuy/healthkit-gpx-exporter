@@ -102,8 +102,23 @@ struct SettingsView: View {
                 HStack {
                     Text("Pending Uploads")
                     Spacer()
-                    Text("\(GPXUploader.shared.pendingFilenames.count)")
+                    Text("\(GPXUploader.shared.pending.count)")
                         .foregroundStyle(.secondary)
+                }
+
+                let failedUploads = GPXUploader.shared.failedFilenames
+                if !failedUploads.isEmpty {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("Failed Uploads (\(failedUploads.count))")
+                            .foregroundStyle(.red)
+                        Text("The server refused these files \(UploadRetryPolicy.maxRejections) times. They are still in the export folder.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        ForEach(failedUploads, id: \.self) { filename in
+                            Text(filename)
+                                .font(.caption.monospaced())
+                        }
+                    }
                 }
 
                 if let lastUpload = GPXUploader.shared.lastResult {
@@ -121,6 +136,12 @@ struct SettingsView: View {
                 Text(BackgroundSyncManager.shared.lastResult ?? "No background sync yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if let saveError = ExportedWorkoutStore.shared.lastSaveError {
+                    Text(saveError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
             }
 
             Section("Status") {
