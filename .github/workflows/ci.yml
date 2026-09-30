@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build and unit test (iOS Simulator)
+    # This repository is PUBLIC: jobs must stay on GitHub-hosted runners. Never
+    # route them to the fleet's self-hosted runner, where an untrusted fork PR
+    # could execute arbitrary code (dgx-infra STANDARDS.md §3).
+    # macos-26 is arm64. Its Xcode set rotates with image updates, so the
+    # XCODE_APP pin below must name a version the image still ships
+    # (images/macos/macos-26-arm64-Readme.md in actions/runner-images).
+    runs-on: macos-26
+    timeout-minutes: 30
+    env:
+      # Xcode 26.6 ships the iOS 26.5 SDK; the app's deployment target is 26.2.
+      XCODE_APP: /Applications/Xcode_26.6.app
+      PROJECT: HealthKitGPXExporter/HealthKitGPXExporter.xcodeproj
+      # The scheme is shared (xcshareddata/xcschemes); an unshared scheme lives
+      # in gitignored xcuserdata/ and would be invisible here.
+      SCHEME: HealthKitGPXExporter
+      # OS=latest resolves to the newest runtime installed for the selected
+      # Xcode, so an image refresh cannot strand a pinned runtime version.
+      DESTINATION: platform=iOS Simulator,name=iPhone 17,OS=latest
+      # Workspace-relative: the runner context is not available in job env.
+      DERIVED_DATA: build/DerivedData
+      # Unit tests only. The UI test target (HealthKitGPXExporterUITests) is
+      # excluded on purpose: UI tests are slow and flaky on hosted simulators.
+      # Run them locally in Xcode.
+      ONLY_TESTING: HealthKitGPXExporterTests
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Select Xcode
+        run: |
+          set -euo pipefail
+          sudo xcode-select -s "$XCODE_APP"
+          xcodebuild -version
+          xcrun simctl list runtimes available
+          xcrun simctl list devices available
+
+      - name: List project schemes
+        run: xcodebuild -list -project "$PROJECT" -json
+
+      # CODE_SIGNING_ALLOWED=NO: CI has no certificates or secrets. The unit
+      # test bundle is hosted in the app (TEST_HOST), so the app itself must
+      # build unsigned. Without signing no HealthKit entitlement is embedded;
+      # HealthKit calls in the test host return an authorization error.
+      - name: Build for testing
+        run: |
+          set -euo pipefail
+          xcodebuild build-for-testing \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "$DESTINATION" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -only-testing:"$ONLY_TESTING" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY=""
+
+      - name: Run unit tests
+        run: |
+          set -euo pipefail
+          xcodebuild test-without-building \
+            -project "$PROJECT" \
+            -scheme "$SCHEME" \
+            -destination "$DESTINATION" \
+            -derivedDataPath "$DERIVED_DATA" \
+            -only-testing:"$ONLY_TESTING"
