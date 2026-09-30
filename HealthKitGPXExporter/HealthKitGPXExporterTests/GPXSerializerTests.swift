@@ -38,14 +38,14 @@ struct GPXSerializerTests {
 
     @Test func sourceIsWrittenToDescAndExtensions() throws {
         let metadata = GPXWorkoutMetadata(
-            source: GPXWorkoutSource(name: "eBike Flow", bundleIdentifier: "com.bosch.ebike.connect")
+            source: GPXWorkoutSource(name: "Example Recorder", bundleIdentifier: "com.example.recorder")
         )
         let xml = GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [point(heartRate: nil)], metadata: metadata)
         let block = try metadataBlock(xml)
 
-        #expect(block.contains("<desc>Recorded by eBike Flow (com.bosch.ebike.connect)</desc>"))
-        #expect(block.contains("<hkx:name>eBike Flow</hkx:name>"))
-        #expect(block.contains("<hkx:bundleIdentifier>com.bosch.ebike.connect</hkx:bundleIdentifier>"))
+        #expect(block.contains("<desc>Recorded by Example Recorder (com.example.recorder)</desc>"))
+        #expect(block.contains("<hkx:name>Example Recorder</hkx:name>"))
+        #expect(block.contains("<hkx:bundleIdentifier>com.example.recorder</hkx:bundleIdentifier>"))
         #expect(xml.contains("xmlns:hkx=\"\(GPXSerializer.extensionNamespace)\""))
     }
 
