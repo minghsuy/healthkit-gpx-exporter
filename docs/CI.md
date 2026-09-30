@@ -25,6 +25,12 @@ Details:
 - **Xcode pin.** `XCODE_APP` in `ci.yml` must name an Xcode that the
   `macos-26` image still ships. See
   [actions/runner-images](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md).
+- **No network in tests.** The app makes network calls only when the user
+  turns on upload in Settings, which is off by default. Unit tests cover the
+  upload request building in plain Swift and never send a request.
+- **iOS 27 code is not built here.** The zone export is behind
+  `#if compiler(>=6.4)`. Xcode 26.6 ships Swift 6.3 and the iOS 26.5 SDK, so
+  CI compiles without it. Moving `XCODE_APP` to Xcode 27 compiles it.
 - Superseded runs on the same ref are cancelled, and every job has a
   `timeout-minutes` cap.
 - `renovate.json` extends the fleet preset, which pins GitHub Actions to commit
