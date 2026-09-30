@@ -66,6 +66,12 @@ class WorkoutViewModel: ObservableObject {
             try await healthKitManager.requestAuthorization()
             healthKitAuthorized = true
             await fetchWorkouts()
+            // The observer needs authorization to deliver; start() is
+            // idempotent. sync() also retries queued uploads, and may move
+            // lastExportDate, which the "Export All New" count reads.
+            BackgroundSyncManager.shared.start()
+            await BackgroundSyncManager.shared.sync()
+            objectWillChange.send()
         } catch {
             errorMessage = "HealthKit access required. Please enable in Settings."
         }
@@ -121,11 +127,12 @@ class WorkoutViewModel: ObservableObject {
 
         for cyclingWorkout in workoutsToExport {
             do {
-                guard try await workoutExporter.export(cyclingWorkout.workout) != nil else {
+                guard let filename = try await workoutExporter.export(cyclingWorkout.workout) else {
                     exportProgress.current += 1
                     continue
                 }
 
+                GPXUploader.shared.enqueue(filename)
                 exportedCount += 1
                 exportProgress.current += 1
 
@@ -144,6 +151,7 @@ class WorkoutViewModel: ObservableObject {
         }
 
         isExporting = false
+        await GPXUploader.shared.uploadPending()
     }
 
     func toggleSelection(for workout: CyclingWorkout) {
