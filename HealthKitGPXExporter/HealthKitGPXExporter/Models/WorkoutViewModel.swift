@@ -42,9 +42,7 @@ class WorkoutViewModel: ObservableObject {
     private static let lastExportDateKey = "lastExportDate"
 
     private let healthKitManager = HealthKitManager()
-    private let heartRateMatcher = HeartRateMatcher()
-    private let gpxSerializer = GPXSerializer()
-    private let fileExporter = FileExporter()
+    private lazy var workoutExporter = WorkoutExporter(healthKitManager: healthKitManager)
 
     var lastExportDate: Date? {
         get { UserDefaults.standard.object(forKey: Self.lastExportDateKey) as? Date }
@@ -123,22 +121,10 @@ class WorkoutViewModel: ObservableObject {
 
         for cyclingWorkout in workoutsToExport {
             do {
-                let locations = try await healthKitManager.fetchRoute(for: cyclingWorkout.workout)
-
-                if locations.isEmpty {
+                guard try await workoutExporter.export(cyclingWorkout.workout) != nil else {
                     exportProgress.current += 1
                     continue
                 }
-
-                let hrSamples = try await healthKitManager.fetchHeartRateSamples(for: cyclingWorkout.workout)
-                let matchedData = heartRateMatcher.match(locations: locations, hrSamples: hrSamples)
-                let gpxString = gpxSerializer.serialize(
-                    workoutDate: cyclingWorkout.date,
-                    matchedData: matchedData
-                )
-
-                let filename = fileExporter.generateFilename(for: cyclingWorkout.date)
-                try fileExporter.writeToICloud(gpxString: gpxString, filename: filename)
 
                 exportedCount += 1
                 exportProgress.current += 1
