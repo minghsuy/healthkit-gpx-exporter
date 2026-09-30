@@ -3,7 +3,8 @@ import HealthKit
 
 /// Exports new cycling workouts automatically: HKObserverQuery background
 /// delivery wakes the app, and an HKAnchoredObjectQuery returns the workouts
-/// added since the persisted anchor.
+/// added since the persisted anchor. A second observer on workout routes
+/// wakes the app when a route lands after its workout.
 final class BackgroundSyncManager {
     static let shared = BackgroundSyncManager()
 
@@ -20,6 +21,7 @@ final class BackgroundSyncManager {
     private lazy var workoutExporter = WorkoutExporter(healthKitManager: healthKitManager)
     private let exportedStore = ExportedWorkoutStore.shared
     private var workoutObserver: HKObserverQuery?
+    private var routeObserver: HKObserverQuery?
     private var isSyncing = false
     private var syncRequested = false
 
@@ -44,12 +46,31 @@ final class BackgroundSyncManager {
                 }
             }
         }
+        // HealthKit saves a route only after its workout, so the workout wake
+        // can find no route yet. The route save wakes the app again, and
+        // sync() retries workouts that were waiting for one.
+        if routeObserver == nil {
+            routeObserver = healthKitManager.observe(HKSeriesType.workoutRoute(), predicate: nil) { completion in
+                Task { @MainActor in
+                    await BackgroundSyncManager.shared.sync()
+                    completion()
+                }
+            }
+        }
 
         Task {
             do {
                 try await healthKitManager.enableBackgroundDelivery(for: HKObjectType.workoutType())
             } catch {
                 record("Background delivery not enabled: \(error.localizedDescription)")
+            }
+            do {
+                // Apple's list of background-delivery types does not name
+                // series types; if HealthKit refuses routes, retries fall back
+                // to the next workout wake or app launch.
+                try await healthKitManager.enableBackgroundDelivery(for: HKSeriesType.workoutRoute())
+            } catch {
+                record("Route background delivery not enabled: \(error.localizedDescription)")
             }
         }
     }
