@@ -112,8 +112,26 @@ struct SyncAdmissionTests {
 
         #expect(result.attempt.isEmpty)
         #expect(result.waitingForICloud == 2)
+        #expect(result.heldForICloud == [fresh, waiting])
         // A workout first seen this pass starts its window now.
         #expect(result.retry == [fresh: now, waiting: waitingSeen])
+    }
+
+    @Test func selectedWorkoutRecordedDuringTheLookupIsNeitherAttemptedNorHeld() {
+        // `selected` is computed before the retry lookups await; a manual
+        // export can record one of them in between.
+        let exportedMeanwhile = UUID()
+        let fresh = UUID()
+        let recorded = ledger(holding: [exportedMeanwhile])
+
+        let online = plan(selected: [exportedMeanwhile, fresh], ledger: recorded)
+        let offline = plan(selected: [exportedMeanwhile, fresh], ledger: recorded, iCloudAvailable: false)
+
+        #expect(online.attempt == [fresh])
+        #expect(offline.attempt.isEmpty)
+        #expect(offline.waitingForICloud == 1)
+        #expect(offline.heldForICloud == [fresh])
+        #expect(offline.retry == [fresh: now])
     }
 
     @Test func retryLookupsSkipWorkoutsTheAnchoredQueryReturned() {

@@ -102,12 +102,30 @@ enum AnchorCommit {
     /// The anchor says "everything before here is handled". That is only
     /// true once the export record holding those workouts is on disk; if the
     /// app died with the record unsaved, an advanced anchor would lose them.
-    /// `heldWorkouts` counts workouts this pass deliberately left undone
-    /// (route still settling, iCloud Drive unavailable, local-only write):
-    /// while any are held the anchor stays, so the anchored query keeps
-    /// returning them even after the retry list's window expires.
-    static func decision(ledgerWritesSucceeded: Bool, heldWorkouts: Int = 0, generationCurrent: Bool) -> Decision {
-        ledgerWritesSucceeded && heldWorkouts == 0 && generationCurrent ? .save : .keep
+    /// `heldWorkouts` counts workouts *the anchored query returned this pass*
+    /// that the pass deliberately left undone (route still settling, iCloud
+    /// Drive unavailable, local-only write): while any are held the anchor
+    /// stays, so the query keeps returning them even after the retry list's
+    /// window expires. Retry-list workouts are not counted: the anchor is
+    /// already past them, so holding it cannot help them, and the retry list
+    /// carries them (SyncAdmission.heldFromQuery).
+    ///
+    /// A baseline pass (no stored anchor) always saves: its query selects
+    /// nothing, so everything it held or failed to record came from the
+    /// retry list, which keeps it. Holding a missing anchor would make every
+    /// later wake another baseline, and rides added meanwhile would be
+    /// fetched, never selected, then passed over for good.
+    static func decision(
+        baseline: Bool = false,
+        ledgerWritesSucceeded: Bool,
+        heldWorkouts: Int = 0,
+        generationCurrent: Bool
+    ) -> Decision {
+        guard generationCurrent else { return .keep }
+        if baseline {
+            return .save
+        }
+        return ledgerWritesSucceeded && heldWorkouts == 0 ? .save : .keep
     }
 }
 
@@ -156,7 +174,8 @@ enum SyncPreflight {
         case .skipUnreadableAnchor:
             let reason = anchorError.map { " (\($0))" } ?? ""
             return "Sync paused: the saved sync position could not be read\(reason). "
-                + "Tap Restart Background Sync; workouts added meanwhile stay in Export All New"
+                + "Restart Background Sync in Settings; workouts added meanwhile are not exported "
+                + "automatically, use Export All New"
         case .skipUnreadableLedger:
             return "Sync paused: export history could not be read, so nothing was exported. "
                 + "It resumes once the file reads again, or after Reset Export History"
@@ -175,6 +194,14 @@ enum SyncAdmission {
         var retry: [UUID: Date]
         /// Set when iCloud Drive is off: how many candidates wait for it.
         var waitingForICloud: Int?
+        /// The candidates the iCloud gate held, for heldFromQuery.
+        var heldForICloud: [UUID] = []
+    }
+
+    /// How many held workouts the anchored query returned this pass; only
+    /// those may hold the anchor (AnchorCommit).
+    static func heldFromQuery(held: [UUID], selected: Set<UUID>) -> Int {
+        held.filter { selected.contains($0) }.count
     }
 
     /// Retry-list workouts to look up in HealthKit. Ones the anchored query
@@ -204,7 +231,9 @@ enum SyncAdmission {
         iCloudAvailable: Bool,
         now: Date
     ) -> Plan {
-        var attempt = selected + retryFound.filter { !ledger.contains($0) }
+        // `selected` was chosen before the retry lookups awaited; a manual
+        // export may have recorded one of them since.
+        var attempt = (selected + retryFound).filter { !ledger.contains($0) }
         var retry: [UUID: Date] = [:]
         // A lookup that failed is not a deletion: keep it for the next wake.
         for uuid in retryUnresolved {
@@ -219,15 +248,17 @@ enum SyncAdmission {
             }
         }
         var waitingForICloud: Int?
+        var heldForICloud: [UUID] = []
         // With iCloud Drive off, write nothing this pass.
         if ICloudGate.plan(iCloudAvailable: iCloudAvailable) == .waitForICloud {
             for uuid in attempt {
                 admit(uuid, into: &retry, previousRetry: previousRetry, now: now)
             }
             waitingForICloud = attempt.count
+            heldForICloud = attempt
             attempt = []
         }
-        return Plan(attempt: attempt, retry: retry, waitingForICloud: waitingForICloud)
+        return Plan(attempt: attempt, retry: retry, waitingForICloud: waitingForICloud, heldForICloud: heldForICloud)
     }
 }
 
@@ -244,12 +275,22 @@ enum SyncSummary {
         ledgerSaveFailed: Bool = false,
         localOnly: Int = 0,
         settleWaits: Int = 0,
-        waitingForICloud: Int? = nil
+        waitingForICloud: Int? = nil,
+        anchorSaved: Bool = true
     ) -> String {
         var summary: String
         if baseline {
-            // A baseline pass exports nothing, so iCloud does not matter.
-            summary = "Baseline taken; \(checked) existing workout(s) left for Export All New"
+            // The query part of a baseline exports nothing; only retry-list
+            // workouts can export, wait for iCloud or stay listed.
+            summary = anchorSaved
+                ? "Baseline taken; \(checked) existing workout(s) left for Export All New"
+                : "No starting point saved yet; \(checked) existing workout(s) left for Export All New"
+            if exported > 0 || toRetry > 0 {
+                summary += "; from the retry list: exported \(exported), \(toRetry) to retry"
+            }
+            if let waitingForICloud, waitingForICloud > 0 {
+                summary += "; iCloud Drive unavailable; \(waitingForICloud) waiting"
+            }
         } else if let waitingForICloud {
             summary = "iCloud Drive unavailable; \(waitingForICloud) waiting"
         } else {
@@ -449,6 +490,8 @@ final class BackgroundSyncManager {
         let candidates = plan.attempt.compactMap { byID[$0] }
         var retry = plan.retry
         let waitingForICloud = plan.waitingForICloud
+        // Left undone on purpose; only the query's own may hold the anchor.
+        var held = plan.heldForICloud
         var exported = 0
         var localOnly = 0
         var settleWaits = 0
@@ -464,6 +507,7 @@ final class BackgroundSyncManager {
             let firstSeen = previousRetry[workout.uuid] ?? now
             if RouteSettle.eligibility(endDate: workout.endDate, firstSeen: firstSeen, now: now) == .wait {
                 settleWaits += 1
+                held.append(workout.uuid)
                 SyncAdmission.admit(workout.uuid, into: &retry, previousRetry: previousRetry, now: now)
                 continue
             }
@@ -481,8 +525,9 @@ final class BackgroundSyncManager {
             }
             if let file, BackgroundExportDecision.action(for: file.destination) == .retry {
                 // Written to this device only. Not done: retry until iCloud
-                // Drive is back, and hold the anchor like a failed save.
+                // Drive is back; a query-returned one also holds the anchor.
                 localOnly += 1
+                held.append(workout.uuid)
                 SyncAdmission.admit(workout.uuid, into: &retry, previousRetry: previousRetry, now: now)
             } else if file != nil {
                 exported += 1
@@ -511,14 +556,17 @@ final class BackgroundSyncManager {
         ledgerWritesSucceeded = exportedStore.flush() && ledgerWritesSucceeded
         saveRetryList(retry)
         var anchorSaveError: String?
+        var anchorSaved = false
         let commit = AnchorCommit.decision(
+            baseline: storedAnchor == nil,
             ledgerWritesSucceeded: ledgerWritesSucceeded,
-            heldWorkouts: localOnly + settleWaits + (waitingForICloud ?? 0),
+            heldWorkouts: SyncAdmission.heldFromQuery(held: held, selected: Set(selected)),
             generationCurrent: Self.generation.isCurrent(token)
         )
         if commit == .save, let anchor = result.anchor {
             do {
                 try saveAnchor(anchor)
+                anchorSaved = true
             } catch {
                 anchorSaveError = error.localizedDescription
             }
@@ -539,7 +587,8 @@ final class BackgroundSyncManager {
             ledgerSaveFailed: !ledgerWritesSucceeded,
             localOnly: localOnly,
             settleWaits: settleWaits,
-            waitingForICloud: waitingForICloud
+            waitingForICloud: waitingForICloud,
+            anchorSaved: anchorSaved
         ))
     }
 

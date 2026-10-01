@@ -136,8 +136,11 @@ ride that another app syncs hours later is still exported.
   on the retry list, the sync position stays put, and Settings shows
   "iCloud Drive unavailable; N waiting". A manual export with iCloud Drive
   off reports "saved on this iPhone only"; those workouts stay in "Export
-  All New". While any workout waits (for iCloud Drive or for its route to
-  settle), the sync position is not moved forward.
+  All New". While any newly added workout waits (for iCloud Drive or for its
+  route to settle), the sync position is not moved forward. A workout that
+  waits only on the retry list does not hold it, since the position is
+  already past it, and neither does the first pass, which only records a
+  starting point; the retry list carries those workouts.
 - **Errors are shown, not hidden.** Settings > Background Sync shows the
   last result when you open it. If the export record cannot be read (for
   example before the first unlock after a restart), the app refuses to
@@ -151,10 +154,17 @@ ride that another app syncs hours later is still exported.
   background export pauses rather than starting over silently, and Settings
   offers "Restart Background Sync". That clears only the anchor and takes a
   fresh starting point; the export record and retry list are kept, so
-  nothing already exported is offered again. Rides added while it was paused
-  are not exported automatically; they stay in "Export All New".
+  nothing already exported is offered again. Rides already on the retry list
+  (waiting for a route or for iCloud Drive) still export automatically from
+  that first pass on. Rides added while it was paused are not exported
+  automatically; use "Export All New". The v1 cutoff still applies there, so
+  a ride synced late that started before your last v1 export is not listed
+  in "Export All New"; use "Export Selected" for it. If the export record is
+  also unreadable, the new starting point waits until the record reads
+  again.
 - **Unsaved record.** If the export record cannot be written, the app does
-  not move its sync position, "Last Export" or the retry list forward, and
+  not move its sync position (other than a first pass's starting point),
+  "Last Export" or the retry list forward, and
   Settings says "export record could not be saved; will retry". A later wake
   covers the same workouts again; re-exporting one overwrites the same file,
   since filenames are fixed per workout.
