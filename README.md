@@ -62,11 +62,30 @@ structured elements in the
   order. Laps, markers and segments are left out, since they do not change
   whether the rider is moving. When the workout has no such events,
   `<hkx:events>` is omitted entirely, rather than written empty.
+- **Reading these fields:**
+  - No `<hkx:events>` means HealthKit holds no pause or resume events for
+    this workout, not that the rider never stopped: some recorders do not
+    log pauses.
+  - `hkx:workoutDuration` is the source app's `HKWorkout.duration`. Apple
+    Watch workouts (recorded with `HKWorkoutBuilder`) leave out paused
+    intervals; other apps may include them.
+  - If `workoutDuration` is shorter than `workoutEnd` minus `workoutStart`
+    and there are no events, assume pauses happened that were not logged.
+  - Events are points in time (`HKWorkoutEvent.dateInterval.start`), and
+    pause and resume need not balance or nest. A `pause` with no later
+    `resume` runs to `workoutEnd`; a `resume` with no earlier `pause` is
+    ignored. Manual pauses (`pause`/`resume`) and auto-pauses
+    (`motionPaused`/`motionResumed`) are independent and can overlap: the
+    rider is moving when neither kind of pause is in effect.
+  - `hkx:workoutStart` equals `<metadata><time>`; both come from the
+    workout's `startDate`.
 - These let the bike-ride-analyzer server compute exact riding time, trim
   idle time before the first resume or after the last movement, and match
   and blend recordings of the same ride (bike-ride-analyzer#883).
-- **`creator`** is now `HealthKitGPXExporter/2.0`; match on the
-  `HealthKitGPXExporter` prefix.
+- **`creator`** is now `HealthKitGPXExporter/2.1`; match on the
+  `HealthKitGPXExporter` prefix. The version marks the format: from 2.1,
+  `hkx:workoutStart`, `hkx:workoutEnd` and `hkx:workoutDuration` are always
+  present.
 - **Filenames** are `workout_yyyy-MM-dd_HHmmss_<first 8 of the workout
   UUID>.gpx`, so two workouts that start in the same second no longer
   overwrite each other. v1 files are not renamed or removed, so re-exporting

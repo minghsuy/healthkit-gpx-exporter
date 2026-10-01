@@ -128,14 +128,12 @@ class HealthKitManager {
         try await healthStore.enableBackgroundDelivery(for: type, frequency: .immediate)
     }
 
-    /// Pause and resume events (manual and auto-pause) in time order; laps,
-    /// markers and segments are dropped.
+    /// Pause and resume events (manual and auto-pause); laps, markers and
+    /// segments are dropped. The serializer puts them in time order.
     static func timingEvents(_ events: [HKWorkoutEvent]) -> [GPXWorkoutEvent] {
-        events
-            .compactMap { event in
-                GPXWorkoutEventType(event.type).map { GPXWorkoutEvent(type: $0, time: event.dateInterval.start) }
-            }
-            .sorted { $0.time < $1.time }
+        events.compactMap { event in
+            GPXWorkoutEventType(event.type).map { GPXWorkoutEvent(type: $0, time: event.dateInterval.start) }
+        }
     }
 
     /// Plain-value metadata for the GPX: the workout UUID, its start, end,

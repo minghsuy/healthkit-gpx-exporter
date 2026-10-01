@@ -45,7 +45,8 @@ struct GPXWorkoutEvent: Equatable {
 struct GPXWorkoutTiming: Equatable {
     let start: Date
     let end: Date
-    /// HKWorkout.duration, which excludes pauses.
+    /// HKWorkout.duration as the source app saved it. Apple Watch workouts
+    /// (HKWorkoutBuilder) leave out paused intervals; other apps may not.
     let duration: TimeInterval
     /// Metres; nil when HealthKit has no total distance.
     var totalDistanceMeters: Double?
@@ -88,11 +89,12 @@ struct GPXSerializer {
         let timeStr = dateFormatter.string(from: workoutDate)
 
         // The server tells a recorded ride from a planned route by the creator
-        // prefix "HealthKitGPXExporter"; keep that prefix.
+        // prefix "HealthKitGPXExporter"; keep that prefix. The version marks
+        // the format: 2.1 and later always carry the workout times.
         var xml = """
         <?xml version="1.0" encoding="UTF-8"?>
         <gpx version="1.1"
-             creator="HealthKitGPXExporter/2.0"
+             creator="HealthKitGPXExporter/2.1"
              xmlns="http://www.topografix.com/GPX/1/1"
              xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
              xmlns:hkx="\(Self.extensionNamespace)"

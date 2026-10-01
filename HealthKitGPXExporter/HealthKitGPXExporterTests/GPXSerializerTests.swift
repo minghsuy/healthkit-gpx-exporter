@@ -33,7 +33,7 @@ struct GPXSerializerTests {
 
         #expect(!metadata.contains("<desc>"))
         #expect(!metadata.contains("<extensions>"))
-        #expect(xml.contains("creator=\"HealthKitGPXExporter/2.0\""))
+        #expect(xml.contains("creator=\"HealthKitGPXExporter/2.1\""))
         #expect(xml.contains("<gpxtpx:hr>140</gpxtpx:hr>"))
     }
 
@@ -97,6 +97,15 @@ struct GPXSerializerTests {
         #expect(positions == positions.sorted())
     }
 
+    @Test func durationRoundsToWholeSeconds() throws {
+        let rounded = GPXWorkoutTiming(start: workoutDate, end: at(minutes: 60), duration: 3_299.5)
+        let block = try metadataBlock(GPXSerializer().serialize(
+            workoutDate: workoutDate, matchedData: [], metadata: GPXWorkoutMetadata(timing: rounded)
+        ))
+
+        #expect(block.contains("<hkx:workoutDuration>3300</hkx:workoutDuration>"))
+    }
+
     @Test func totalDistanceIsOmittedWhenMissing() throws {
         let metadata = GPXWorkoutMetadata(timing: timing(distance: nil))
         let block = try metadataBlock(GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [], metadata: metadata))
@@ -152,11 +161,12 @@ struct GPXSerializerTests {
 
         let kept = HealthKitManager.timingEvents(events)
 
+        // Input order kept; the serializer sorts (eventsAreWrittenInTimeOrder).
         #expect(kept == [
+            GPXWorkoutEvent(type: .motionResumed, time: at(minutes: 40)),
             GPXWorkoutEvent(type: .pause, time: at(minutes: 20)),
             GPXWorkoutEvent(type: .resume, time: at(minutes: 30)),
-            GPXWorkoutEvent(type: .motionPaused, time: at(minutes: 35)),
-            GPXWorkoutEvent(type: .motionResumed, time: at(minutes: 40))
+            GPXWorkoutEvent(type: .motionPaused, time: at(minutes: 35))
         ])
     }
 
