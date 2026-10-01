@@ -91,18 +91,15 @@ final class BackgroundSyncManager {
     }
 
     /// HealthKit counts a wake as delivered only when `completion` runs, and
-    /// stops background delivery after three misses. So completion follows
-    /// the HealthKit and export work alone; uploads run afterwards under
-    /// their own background-task time and deadline.
+    /// stops background delivery after three misses. Call it as soon as the
+    /// HealthKit and export work is done; add nothing slow before it.
     private func handleWake(_ completion: @escaping () -> Void) async {
         await sync()
         completion()
-        await GPXUploader.shared.uploadPendingInBackgroundTask()
     }
 
-    /// Exports workouts added since the last sync. Does not upload; callers
-    /// start uploads separately. Overlapping calls coalesce into one extra
-    /// pass.
+    /// Exports workouts added since the last sync. Overlapping calls coalesce
+    /// into one extra pass.
     func sync() async {
         if isSyncing {
             syncRequested = true
@@ -163,18 +160,17 @@ final class BackgroundSyncManager {
             if exportedStore.ledger.contains(workout.uuid) {
                 continue
             }
-            let file: ExportedGPX?
+            let filename: String?
             do {
-                file = try await workoutExporter.export(workout)
+                filename = try await workoutExporter.export(workout)
             } catch {
-                file = nil
+                filename = nil
                 lastError = error.localizedDescription
             }
 
-            if let file {
+            if filename != nil {
                 exported += 1
                 exportedStore.markExported(WorkoutCandidate(uuid: workout.uuid, startDate: workout.startDate))
-                GPXUploader.shared.enqueue(file)
             } else if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
                 // No route yet, or the export failed: try again next wake.
                 retry[workout.uuid] = firstSeen

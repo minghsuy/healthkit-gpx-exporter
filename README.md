@@ -47,19 +47,10 @@ when iCloud Drive is off. The app has no third-party dependencies.
   history. A workout whose route is not in Health yet is retried when the
   route is saved, and on later wakes, for up to seven days after the app
   first sees it.
-- **Optional upload, off by default.** In Settings you can turn on upload,
-  enter an `https://` server URL, and optionally save a bearer token, which is
-  kept in the Keychain. Each exported file is then also POSTed as
-  `multipart/form-data` (field `gpx`) to `{server URL}/api/v1/rides/gpx`.
-  Data goes only to the URL you enter. Turning upload on does not send
-  earlier exports; only exports made from then on are queued. Failed uploads
-  retry on the next launch or background wake; each pass stops starting new
-  uploads after about 20 seconds. A 401 or 403 stops the pass and shows
-  "Authentication failed" in Settings. A file the server refuses with any
-  other 4xx (except 408 or 429) five times is listed in Settings as failed
-  and stays in the export folder. The source name in the GPX can be a
-  personal device name, such as "Alex's Apple Watch", so it travels with
-  every uploaded file.
+- Upload to your own server is planned (bike-ride-analyzer#883 phase 2).
+  The app still makes no network calls. The source name in the GPX can be a
+  personal device name, such as "Alex's Apple Watch"; keep that in mind
+  when sharing the files.
 - **Heart-rate and power zones (iOS 27).** On iOS 27 the time in each zone
   from `HKWorkout.zoneGroupsByType` is written as `<hkx:zones>`. This code is
   compiled only with Xcode 27 (Swift 6.4) or later.
