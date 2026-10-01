@@ -54,3 +54,28 @@ structured elements in the
 - **Privacy.** The source name can be a personal device name, such as
   "Alex's Apple Watch". It is written into every file, so keep that in mind
   when sharing them.
+
+## Automatic export
+
+HealthKit background delivery wakes the app when a cycling workout, or a
+workout route, is saved to Health. The app then exports every cycling
+workout added since its last check, whatever the workout's start time, so a
+ride that another app syncs hours later is still exported.
+
+- **Exported once.** Exported workouts are tracked by HealthKit UUID in
+  `exported-workouts.json` (Application Support). "Export All New" uses the
+  same record, so the two paths never export a workout twice, and the list
+  updates as soon as either one exports.
+- **First run.** The first background check only records a starting point
+  and exports nothing. Use "Export All New" for the history; on an upgrade
+  from v1, workouts that started before the last v1 export count as already
+  exported.
+- **Late routes.** HealthKit saves a route after its workout. A workout with
+  no route yet is retried when the route is saved and on later wakes, for up
+  to seven days after the app first sees it.
+- **Errors are shown, not hidden.** Settings > Background Sync shows the
+  last result. If the export record cannot be read, the app refuses to
+  overwrite it and disables "Export All New"; "Reset Export History" clears
+  the record, the sync anchor and the retry list.
+- Background delivery needs the HealthKit Background Delivery capability on
+  the App ID and only works on a device, not in the Simulator.
