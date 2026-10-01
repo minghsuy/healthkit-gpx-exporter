@@ -154,23 +154,26 @@ longer asks the encryption question per build. Builds uploaded before the key
 landed still need the question answered once in App Store Connect. Revisit
 this only if the app adds its own cryptography; it is a legal declaration.
 
-### Unverified until the first real run
+### Verified on the first real run (2026-09-30, build 103)
 
-These need a Mac or a live run, so they have not been checked:
+The first upload (run 36810188694) archived, cloud-signed and uploaded with
+the App Store Connect API key alone, and App Store Connect processed it:
 
-- Whether `-allowProvisioningUpdates` with an API key creates a new Apple
-  Development certificate on each fresh runner. If Certificates starts
-  filling with "Created via API" entries, revoke the stale ones.
-- Whether the iCloud container needs to exist before the first archive
-  (step 3).
-- Whether `-exportArchive` with `destination` upload authenticates the upload
-  itself with the API key alone, with no Apple ID signed in to Xcode.
-  Apple's sources confirm the key works for xcodebuild signing; the upload is
-  inferred.
-- Whether the upload passes App Store Connect validation. The missing app
-  icon (step 7) is a known rejection; others may surface on the first run.
-- Whether the Admin role is strictly required, or whether a lower-role key
-  granted "Access to Cloud Managed Distribution Certificate" is enough.
+- `-exportArchive` with `destination` upload authenticates the upload with
+  the API key; no Apple ID is signed in to Xcode.
+- The upload passes App Store Connect validation once the app icon exists
+  (#16).
+
+Still unverified:
+
+- Whether the iCloud container must exist on the App ID before the first
+  archive. This run cannot tell: the container already existed (step 3).
+
+- Whether `-allowProvisioningUpdates` creates a new Apple Development
+  certificate on each fresh runner. If Certificates starts filling with
+  "Created via API" entries, revoke the stale ones.
+- Whether a lower-role key granted "Access to Cloud Managed Distribution
+  Certificate" would be enough; the key in use has the Admin role.
 
 References: `man xcodebuild` (`-allowProvisioningUpdates`,
 `-authenticationKey*`); WWDC21 session 10204, "Distribute apps in Xcode with
