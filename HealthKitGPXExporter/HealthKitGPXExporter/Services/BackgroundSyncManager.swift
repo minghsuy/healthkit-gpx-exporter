@@ -18,12 +18,57 @@ enum RetryAdmission {
     }
 }
 
+/// Counts "Reset Export History" events. A sync pass or manual export that
+/// started before a reset must not write anything after it, or it would
+/// restore the ledger entries, anchor and retry list the reset cleared.
+/// Everything runs on the main actor, so a plain counter is enough.
+struct SyncGeneration {
+    private(set) var value = 0
+
+    mutating func advance() {
+        value += 1
+    }
+
+    /// Whether work that started at `token` may still commit.
+    func isCurrent(_ token: Int) -> Bool {
+        token == value
+    }
+}
+
+/// The Settings line for one finished pass. Plain Swift so the wording,
+/// including a failed anchor save, is unit-testable.
+enum SyncSummary {
+    static func text(
+        baseline: Bool,
+        checked: Int,
+        exported: Int,
+        toRetry: Int,
+        lastError: String?,
+        anchorSaveError: String?
+    ) -> String {
+        var summary = baseline
+            ? "Baseline taken; \(checked) existing workout(s) left for Export All New"
+            : "Checked \(checked) new workout(s), exported \(exported), \(toRetry) to retry"
+        if let lastError {
+            summary += "; last error: \(lastError)"
+        }
+        if let anchorSaveError {
+            // Without a saved anchor the next wake replays this pass.
+            summary += "; could not save sync position: \(anchorSaveError)"
+        }
+        return summary
+    }
+}
+
 /// Exports new cycling workouts automatically: HKObserverQuery background
 /// delivery wakes the app, and an HKAnchoredObjectQuery returns the workouts
 /// added since the persisted anchor. A second observer on workout routes
 /// wakes the app when a route lands after its workout.
 final class BackgroundSyncManager {
     static let shared = BackgroundSyncManager()
+
+    /// Advanced by resetSyncState; checked before every commit.
+    static var generation = SyncGeneration()
 
     static let anchorKey = "workoutSyncAnchor"
     /// [UUID string: first seen]. Replaces the draft's plain UUID array.
@@ -115,6 +160,8 @@ final class BackgroundSyncManager {
     }
 
     private func syncOnce() async {
+        // Every commit below checks this token first.
+        let token = Self.generation.value
         let storedAnchor: HKQueryAnchor?
         do {
             storedAnchor = try loadAnchor()
@@ -132,6 +179,11 @@ final class BackgroundSyncManager {
             return
         }
 
+        // The HealthKit query awaited; a reset meanwhile abandons the pass.
+        guard Self.generation.isCurrent(token) else {
+            record("Sync abandoned: export history was reset during the pass")
+            return
+        }
         exportedStore.removeDeleted(result.deleted)
 
         let added = result.workouts.map { WorkoutCandidate(uuid: $0.uuid, startDate: $0.startDate) }
@@ -168,6 +220,10 @@ final class BackgroundSyncManager {
                 lastError = error.localizedDescription
             }
 
+            guard Self.generation.isCurrent(token) else {
+                record("Sync abandoned: export history was reset during the pass")
+                return
+            }
             if filename != nil {
                 exported += 1
                 exportedStore.markExported(WorkoutCandidate(uuid: workout.uuid, startDate: workout.startDate))
@@ -178,21 +234,32 @@ final class BackgroundSyncManager {
         }
 
         // The anchor advances only after every candidate was exported or
-        // queued for retry, so a crash mid-loop re-delivers them.
+        // queued for retry, so a crash mid-loop re-delivers them. No await
+        // between this check and the saves, so a reset cannot slip between.
+        guard Self.generation.isCurrent(token) else {
+            record("Sync abandoned: export history was reset during the pass")
+            return
+        }
         saveRetryList(retry)
+        var anchorSaveError: String?
         if let anchor = result.anchor {
-            saveAnchor(anchor)
+            do {
+                try saveAnchor(anchor)
+            } catch {
+                anchorSaveError = error.localizedDescription
+            }
         }
         if exported > 0 {
             UserDefaults.standard.set(Date(), forKey: Self.lastExportDateKey)
         }
-        var summary = storedAnchor == nil
-            ? "Baseline taken; \(result.workouts.count) existing workout(s) left for Export All New"
-            : "Checked \(result.workouts.count) new workout(s), exported \(exported), \(retry.count) to retry"
-        if let lastError {
-            summary += "; last error: \(lastError)"
-        }
-        record(summary)
+        record(SyncSummary.text(
+            baseline: storedAnchor == nil,
+            checked: result.workouts.count,
+            exported: exported,
+            toRetry: retry.count,
+            lastError: lastError,
+            anchorSaveError: anchorSaveError
+        ))
     }
 
     /// Looks up retry-list workouts. A deleted workout comes back as neither
@@ -249,13 +316,9 @@ final class BackgroundSyncManager {
         return anchor
     }
 
-    private func saveAnchor(_ anchor: HKQueryAnchor) {
-        do {
-            let data = try NSKeyedArchiver.archivedData(withRootObject: anchor, requiringSecureCoding: true)
-            UserDefaults.standard.set(data, forKey: Self.anchorKey)
-        } catch {
-            record("Could not save the sync anchor: \(error.localizedDescription)")
-        }
+    private func saveAnchor(_ anchor: HKQueryAnchor) throws {
+        let data = try NSKeyedArchiver.archivedData(withRootObject: anchor, requiringSecureCoding: true)
+        UserDefaults.standard.set(data, forKey: Self.anchorKey)
     }
 
     /// Part of "Reset Export History": forget the anchor and retry list too,
@@ -263,6 +326,7 @@ final class BackgroundSyncManager {
     /// next sync then takes a fresh baseline and exports nothing; history is
     /// back with "Export All New".
     static func resetSyncState(in defaults: UserDefaults = .standard) {
+        generation.advance()
         defaults.removeObject(forKey: anchorKey)
         defaults.removeObject(forKey: retryKey)
         defaults.removeObject(forKey: legacyRetryKey)
