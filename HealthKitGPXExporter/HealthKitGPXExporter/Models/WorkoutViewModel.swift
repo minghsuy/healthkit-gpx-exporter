@@ -74,9 +74,12 @@ class WorkoutViewModel: ObservableObject {
     }
 
     /// Retries a record that failed to read at launch (say, before first
-    /// unlock), so "Export All New" re-enables without a relaunch.
+    /// unlock), so "Export All New" re-enables without a relaunch, then
+    /// writes exports held in memory meanwhile, which clears the save error.
     func refreshExportHistory() {
-        exportedStore.reloadIfUnreadable()
+        if exportedStore.reloadIfUnreadable() {
+            exportedStore.flush()
+        }
     }
 
     func isExported(_ workout: CyclingWorkout) -> Bool {

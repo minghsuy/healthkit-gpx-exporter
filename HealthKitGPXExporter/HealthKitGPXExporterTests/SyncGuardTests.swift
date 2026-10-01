@@ -125,7 +125,7 @@ struct SyncGuardTests {
         let suite = "SyncGuardTests-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let retry = [UUID().uuidString: Date()]
+        let retry = [UUID().uuidString: Date(timeIntervalSince1970: 1_790_000_000)]
         defaults.set(Data([1, 2, 3]), forKey: BackgroundSyncManager.anchorKey)
         defaults.set(retry, forKey: BackgroundSyncManager.retryKey)
         let token = BackgroundSyncManager.generation.value

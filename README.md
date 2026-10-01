@@ -144,7 +144,7 @@ ride that another app syncs hours later is still exported.
   overwrite it, disables "Export All New" with a note saying why, and pauses
   background export: a pass then exports nothing and moves nothing forward,
   so no ride is exported twice and none is skipped. The app reads the record
-  again on every pass, on refresh and whenever it comes to the foreground,
+  again on every pass, at launch and whenever it comes to the foreground,
   and carries on once it reads. "Reset Export History" clears the record,
   the sync anchor and the retry list.
 - **Unreadable sync position.** If the saved sync anchor cannot be read,

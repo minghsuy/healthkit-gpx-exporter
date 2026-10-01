@@ -129,17 +129,20 @@ struct ExportStateTests {
         defer { try? FileManager.default.removeItem(at: file) }
         try Data("not json".utf8).write(to: file)
         let store = ExportedWorkoutStore(fileURL: file)
+        let viewModel = WorkoutViewModel(exportedStore: store)
         // "Export Selected" while unreadable: held in memory, save refused.
         let inMemory = WorkoutCandidate(uuid: UUID(), startDate: start)
         #expect(!store.markExported(inMemory))
+        #expect(store.lastSaveError != nil)
 
         try JSONEncoder().encode(ExportLedger()).write(to: file)
 
-        #expect(store.reloadIfUnreadable())
+        // Foreground: the read succeeds and the held export is written.
+        viewModel.refreshExportHistory()
+
         #expect(store.ledger.contains(inMemory.uuid))
-        // Still unsaved until the next save or flush writes it.
-        #expect(store.hasUnsavedChanges)
-        #expect(store.flush())
+        #expect(!store.hasUnsavedChanges)
+        #expect(store.lastSaveError == nil)
         let saved = try JSONDecoder().decode(ExportLedger.self, from: Data(contentsOf: file))
         #expect(saved.contains(inMemory.uuid))
     }
