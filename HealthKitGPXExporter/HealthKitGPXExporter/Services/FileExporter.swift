@@ -10,8 +10,13 @@ struct FileExporter {
         return formatter
     }()
 
-    func generateFilename(for date: Date) -> String {
-        "workout_\(filenameFormatter.string(from: date)).gpx"
+    /// The start time alone is not unique: two apps can record workouts in
+    /// the same second, and a DST fall-back hour repeats local times. The
+    /// first eight characters of the workout UUID keep one file per workout.
+    /// v1 files, named without them, are left as they are.
+    func generateFilename(for date: Date, workoutID: UUID) -> String {
+        let suffix = workoutID.uuidString.prefix(8).lowercased()
+        return "workout_\(filenameFormatter.string(from: date))_\(suffix).gpx"
     }
 
     func getExportDirectory() throws -> URL {
