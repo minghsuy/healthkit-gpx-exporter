@@ -64,8 +64,9 @@ ride that another app syncs hours later is still exported.
 
 - **Exported once.** Exported workouts are tracked by HealthKit UUID in
   `exported-workouts.json` (Application Support). "Export All New" uses the
-  same record, so the two paths never export a workout twice, and the list
-  updates as soon as either one exports.
+  same record, so neither path exports a workout again automatically, and
+  the list updates as soon as either one exports. "Export Selected" re-exports
+  on purpose.
 - **First run.** The first background check only records a starting point
   and exports nothing. Use "Export All New" for the history; on an upgrade
   from v1, workouts that started before the last v1 export count as already
@@ -74,7 +75,7 @@ ride that another app syncs hours later is still exported.
   no route yet is retried when the route is saved and on later wakes, for up
   to seven days after the app first sees it.
 - **Errors are shown, not hidden.** Settings > Background Sync shows the
-  last result. If the export record cannot be read, the app refuses to
+  last result when you open it. If the export record cannot be read, the app refuses to
   overwrite it and disables "Export All New"; "Reset Export History" clears
   the record, the sync anchor and the retry list.
 - Background delivery needs the HealthKit Background Delivery capability on
