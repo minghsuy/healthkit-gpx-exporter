@@ -134,10 +134,11 @@ class WorkoutViewModel: ObservableObject {
                 let matchedData = heartRateMatcher.match(locations: locations, hrSamples: hrSamples)
                 let gpxString = gpxSerializer.serialize(
                     workoutDate: cyclingWorkout.date,
-                    matchedData: matchedData
+                    matchedData: matchedData,
+                    metadata: healthKitManager.metadata(for: cyclingWorkout.workout)
                 )
 
-                let filename = fileExporter.generateFilename(for: cyclingWorkout.date)
+                let filename = fileExporter.generateFilename(for: cyclingWorkout.date, workoutID: cyclingWorkout.id)
                 try fileExporter.writeToICloud(gpxString: gpxString, filename: filename)
 
                 exportedCount += 1
