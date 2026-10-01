@@ -234,7 +234,7 @@ class WorkoutViewModel: ObservableObject {
         // Not a problem, but the user should know these are not final.
         var notes: [String] = []
         if notSettled > 0 {
-            notes.append("\(notSettled) just-finished ride\(notSettled == 1 ? "" : "s") exported; \(notSettled == 1 ? "it'll" : "they'll") be re-exported once the route is complete.")
+            notes.append("\(notSettled) just-finished ride\(notSettled == 1 ? "" : "s") exported; \(notSettled == 1 ? "it stays" : "they stay") in Export All New until the route is complete.")
         }
         if abandoned {
             errorMessage = "Export stopped: export history was reset."

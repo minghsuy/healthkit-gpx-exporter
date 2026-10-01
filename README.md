@@ -120,9 +120,9 @@ These can only be verified on a device:
    export with iCloud Drive off reports "saved on this iPhone only", and the
    workouts stay in "Export All New".
 4. A ride another app syncs hours late (for example the Bosch app) still
-   exports, about 10 minutes after it appears in Health, with its full
-   route.
+   exports with its full route, at the first wake or app launch at least 10
+   minutes after it appears in Health.
 5. The first launch after installing takes a baseline and exports nothing.
-6. Exporting a ride manually within 10 minutes of finishing says it will be
-   re-exported once the route is complete, and background export later
+6. Exporting a ride manually within 10 minutes of finishing says it stays in
+   "Export All New" until its route is complete; a later background export
    overwrites the file.
