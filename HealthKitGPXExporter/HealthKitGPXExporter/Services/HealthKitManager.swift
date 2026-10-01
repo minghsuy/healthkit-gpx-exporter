@@ -128,12 +128,30 @@ class HealthKitManager {
         try await healthStore.enableBackgroundDelivery(for: type, frequency: .immediate)
     }
 
-    /// Plain-value metadata for the GPX: the workout UUID, the recording app
-    /// and, on iOS 27, time in heart-rate and power zones.
+    /// Pause and resume events (manual and auto-pause) in time order; laps,
+    /// markers and segments are dropped.
+    static func timingEvents(_ events: [HKWorkoutEvent]) -> [GPXWorkoutEvent] {
+        events
+            .compactMap { event in
+                GPXWorkoutEventType(event.type).map { GPXWorkoutEvent(type: $0, time: event.dateInterval.start) }
+            }
+            .sorted { $0.time < $1.time }
+    }
+
+    /// Plain-value metadata for the GPX: the workout UUID, its start, end,
+    /// moving duration, distance and pause events, the recording app and, on
+    /// iOS 27, time in heart-rate and power zones.
     func metadata(for workout: HKWorkout) -> GPXWorkoutMetadata {
         let source = workout.sourceRevision.source
         var metadata = GPXWorkoutMetadata(
             workoutUUID: workout.uuid,
+            timing: GPXWorkoutTiming(
+                start: workout.startDate,
+                end: workout.endDate,
+                duration: workout.duration,
+                totalDistanceMeters: workout.totalDistance?.doubleValue(for: .meter()),
+                events: Self.timingEvents(workout.workoutEvents ?? [])
+            ),
             source: GPXWorkoutSource(name: source.name, bundleIdentifier: source.bundleIdentifier)
         )
         #if compiler(>=6.4)
@@ -300,6 +318,24 @@ enum HealthKitError: LocalizedError {
         switch self {
         case .notAvailable:
             return "HealthKit is not available on this device."
+        }
+    }
+}
+
+extension GPXWorkoutEventType {
+    /// nil for event types that do not mark moving or stopped.
+    init?(_ type: HKWorkoutEventType) {
+        switch type {
+        case .pause:
+            self = .pause
+        case .resume:
+            self = .resume
+        case .motionPaused:
+            self = .motionPaused
+        case .motionResumed:
+            self = .motionResumed
+        default:
+            return nil
         }
     }
 }
