@@ -24,8 +24,8 @@ enum RetryAdmission {
 /// workout ends, and requiring at least one route sample, is the best signal
 /// available.
 enum RouteSettle {
-    /// ROUTE_SETTLE_MIN: how long after a workout ends background export
-    /// waits before reading its route. Ten minutes covers recorders that
+    /// How long after a workout ends background export waits before reading
+    /// its route. Ten minutes covers recorders that
     /// sync the route shortly after the workout; a later wake or the route
     /// observer picks the workout up once it has passed.
     static let minimumDelay: TimeInterval = 10 * 60
@@ -40,8 +40,24 @@ enum RouteSettle {
     }
 }
 
+/// Whether a background pass writes anything. With iCloud Drive off, every
+/// write would land in local Documents and be retried on every wake, so the
+/// pass writes nothing: candidates wait on the retry list and the anchor is
+/// held, and each wake costs only HealthKit queries.
+enum ICloudGate {
+    enum Plan: Equatable {
+        case export
+        case waitForICloud
+    }
+
+    static func plan(iCloudAvailable: Bool) -> Plan {
+        iCloudAvailable ? .export : .waitForICloud
+    }
+}
+
 /// What background export does with a written file. Only a file in iCloud
-/// Drive counts as done; a local fallback is retried until iCloud is back.
+/// Drive counts as done; a local fallback (iCloud vanished mid-pass) is
+/// retried until iCloud is back.
 enum BackgroundExportDecision {
     enum Action: Equatable {
         case mark
@@ -82,8 +98,12 @@ enum AnchorCommit {
     /// The anchor says "everything before here is handled". That is only
     /// true once the export record holding those workouts is on disk; if the
     /// app died with the record unsaved, an advanced anchor would lose them.
-    static func decision(ledgerWritesSucceeded: Bool, generationCurrent: Bool) -> Decision {
-        ledgerWritesSucceeded && generationCurrent ? .save : .keep
+    /// `heldWorkouts` counts workouts this pass deliberately left undone
+    /// (route still settling, iCloud Drive unavailable, local-only write):
+    /// while any are held the anchor stays, so the anchored query keeps
+    /// returning them even after the retry list's window expires.
+    static func decision(ledgerWritesSucceeded: Bool, heldWorkouts: Int = 0, generationCurrent: Bool) -> Decision {
+        ledgerWritesSucceeded && heldWorkouts == 0 && generationCurrent ? .save : .keep
     }
 }
 
@@ -98,11 +118,22 @@ enum SyncSummary {
         lastError: String?,
         anchorSaveError: String?,
         ledgerSaveFailed: Bool = false,
-        localOnly: Int = 0
+        localOnly: Int = 0,
+        settleWaits: Int = 0,
+        waitingForICloud: Int? = nil
     ) -> String {
-        var summary = baseline
-            ? "Baseline taken; \(checked) existing workout(s) left for Export All New"
-            : "Checked \(checked) new workout(s), exported \(exported), \(toRetry) to retry"
+        var summary: String
+        if baseline {
+            // A baseline pass exports nothing, so iCloud does not matter.
+            summary = "Baseline taken; \(checked) existing workout(s) left for Export All New"
+        } else if let waitingForICloud {
+            summary = "iCloud Drive unavailable; \(waitingForICloud) waiting"
+        } else {
+            summary = "Checked \(checked) new workout(s), exported \(exported), \(toRetry) to retry"
+        }
+        if settleWaits > 0 {
+            summary += "; \(settleWaits) waiting for the route to settle"
+        }
         if let lastError {
             summary += "; last error: \(lastError)"
         }
@@ -142,6 +173,7 @@ final class BackgroundSyncManager {
     private let healthKitManager = HealthKitManager()
     private lazy var workoutExporter = WorkoutExporter(healthKitManager: healthKitManager)
     private let exportedStore = ExportedWorkoutStore.shared
+    private let fileExporter = FileExporter()
     private var workoutObserver: HKObserverQuery?
     private var routeObserver: HKObserverQuery?
     private var isSyncing = false
@@ -280,7 +312,20 @@ final class BackgroundSyncManager {
         }
         var exported = 0
         var localOnly = 0
+        var settleWaits = 0
+        var waitingForICloud: Int?
         var lastError: String?
+        // Checked once: with iCloud Drive off, write nothing this pass.
+        if ICloudGate.plan(iCloudAvailable: fileExporter.isICloudAvailable) == .waitForICloud {
+            let waiting = candidates.filter { !exportedStore.ledger.contains($0.uuid) }
+            for workout in waiting {
+                if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
+                    retry[workout.uuid] = firstSeen
+                }
+            }
+            waitingForICloud = waiting.count
+            candidates = []
+        }
         for workout in candidates {
             // A manual export may have run while this loop awaited.
             if exportedStore.ledger.contains(workout.uuid) {
@@ -289,6 +334,7 @@ final class BackgroundSyncManager {
             // Too soon after the workout ended: its route may still be
             // arriving. Wait without exporting a partial track.
             if RouteSettle.eligibility(endDate: workout.endDate, now: now) == .wait {
+                settleWaits += 1
                 if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
                     retry[workout.uuid] = firstSeen
                 }
@@ -343,7 +389,8 @@ final class BackgroundSyncManager {
         saveRetryList(retry)
         var anchorSaveError: String?
         let commit = AnchorCommit.decision(
-            ledgerWritesSucceeded: ledgerWritesSucceeded && localOnly == 0,
+            ledgerWritesSucceeded: ledgerWritesSucceeded,
+            heldWorkouts: localOnly + settleWaits + (waitingForICloud ?? 0),
             generationCurrent: Self.generation.isCurrent(token)
         )
         if commit == .save, let anchor = result.anchor {
@@ -367,7 +414,9 @@ final class BackgroundSyncManager {
             lastError: lastError,
             anchorSaveError: anchorSaveError,
             ledgerSaveFailed: !ledgerWritesSucceeded,
-            localOnly: localOnly
+            localOnly: localOnly,
+            settleWaits: settleWaits,
+            waitingForICloud: waitingForICloud
         ))
     }
 

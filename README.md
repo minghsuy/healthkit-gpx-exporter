@@ -4,7 +4,9 @@ An iOS app that exports cycling workouts from Apple Health to GPX files, with
 the full route and matched heart rate. Files go to the app's iCloud container,
 shown in iCloud Drive as `HealthKitGPXExporter/Bike-Ride-Analyzer/imports/`
 (on a Mac: `~/Library/Mobile Documents/iCloud~com~minghsuy~HealthKitGPXExporter/Documents/Bike-Ride-Analyzer/imports/`),
-or to the app's Documents folder when iCloud Drive is off. The app itself makes
+which needs iCloud Drive turned on. With iCloud Drive off, an export lands in
+the app's private Documents folder, which you cannot browse, so it is not
+treated as done (see "Automatic export"). The app itself makes
 no network requests (iOS syncs the iCloud folder) and has no third-party
 dependencies.
 
@@ -78,11 +80,15 @@ ride that another app syncs hours later is still exported.
   ended too recently, or has no route yet, is retried when a route is saved
   and on later wakes, for up to seven days after the app first sees it.
   Without such a wake, it waits for the next one or the next app launch.
-- **iCloud Drive or retry.** A background export counts as done only once
-  the file is in iCloud Drive. If iCloud Drive is unavailable the file goes
-  to this iPhone's Documents folder, the workout stays on the retry list, and
-  the sync position is not moved forward. A manual export still falls back
-  to Documents, and says so.
+- **Done means iCloud Drive.** An export counts as done only once the file is
+  in iCloud Drive, for background and manual exports alike. The app's own
+  Documents folder is not visible to you, so a file there reaches nobody.
+  With iCloud Drive off, background export writes nothing: new workouts wait
+  on the retry list, the sync position stays put, and Settings shows
+  "iCloud Drive unavailable; N waiting". A manual export with iCloud Drive
+  off reports "saved on this iPhone only"; those workouts stay in "Export
+  All New". While any workout waits (for iCloud Drive or for its route to
+  settle), the sync position is not moved forward.
 - **Errors are shown, not hidden.** Settings > Background Sync shows the
   last result when you open it. If the export record cannot be read, the app refuses to
   overwrite it and disables "Export All New"; "Reset Export History" clears
@@ -99,13 +105,15 @@ ride that another app syncs hours later is still exported.
 
 These can only be verified on a device:
 
-1. After a ride, Settings > Background Sync first shows the workout waiting
-   (counted as "to retry") until 10 minutes after it ended, then exported on
-   the next wake or launch.
+1. After a ride, Settings > Background Sync first shows "1 waiting for the
+   route to settle" until 10 minutes after it ended, then the workout is
+   exported on the next wake or launch.
 2. A ride with a pause exports as one track containing every route segment.
-3. With iCloud Drive turned off, a background export reports "saved only on
-   this iPhone (iCloud Drive unavailable); will retry", and exports to iCloud
-   Drive once it is back on.
+3. With iCloud Drive turned off, Settings > Background Sync shows "iCloud
+   Drive unavailable; N waiting", no file is written, and the workouts export
+   to iCloud Drive on the first wake or launch after it is back on. A manual
+   export with iCloud Drive off reports "saved on this iPhone only", and the
+   workouts stay in "Export All New".
 4. A ride another app syncs hours late (for example the Bosch app) still
    exports.
 5. The first launch after installing takes a baseline and exports nothing.

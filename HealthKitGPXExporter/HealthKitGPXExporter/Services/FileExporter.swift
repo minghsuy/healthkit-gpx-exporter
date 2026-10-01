@@ -1,13 +1,12 @@
 import Foundation
 
-/// Where an export ended up. Background export counts only `.iCloud` as
-/// done: a local copy never reaches the server-side inbox on its own.
+/// Where an export ended up. Only `.iCloud` counts as done, on every path:
+/// the app's local Documents folder is not visible to the user, so a local
+/// copy never reaches anyone on its own. A failed write throws instead.
 enum ExportDestination: Equatable {
     case iCloud
     /// iCloud Drive was unavailable; the file is in this device's Documents.
     case localFallback
-    /// Nothing usable was written.
-    case failed
 }
 
 struct FileExporter {

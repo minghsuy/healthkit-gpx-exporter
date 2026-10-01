@@ -23,7 +23,37 @@ struct BackgroundExportRulesTests {
     @Test func onlyAnICloudWriteIsMarked() {
         #expect(BackgroundExportDecision.action(for: .iCloud) == .mark)
         #expect(BackgroundExportDecision.action(for: .localFallback) == .retry)
-        #expect(BackgroundExportDecision.action(for: .failed) == .retry)
+    }
+
+    @Test func passWritesNothingWithoutICloud() {
+        #expect(ICloudGate.plan(iCloudAvailable: true) == .export)
+        #expect(ICloudGate.plan(iCloudAvailable: false) == .waitForICloud)
+    }
+
+    @Test func heldWorkoutsKeepTheAnchor() {
+        #expect(AnchorCommit.decision(ledgerWritesSucceeded: true, heldWorkouts: 0, generationCurrent: true) == .save)
+        // A settle wait, an iCloud-unavailable wait or a local-only write.
+        #expect(AnchorCommit.decision(ledgerWritesSucceeded: true, heldWorkouts: 1, generationCurrent: true) == .keep)
+        #expect(AnchorCommit.decision(ledgerWritesSucceeded: false, heldWorkouts: 0, generationCurrent: true) == .keep)
+    }
+
+    @Test func summaryReportsICloudWaitAndSettleWaitsSeparately() {
+        let unavailable = SyncSummary.text(
+            baseline: false, checked: 3, exported: 0, toRetry: 3,
+            lastError: nil, anchorSaveError: nil, waitingForICloud: 3
+        )
+        let settling = SyncSummary.text(
+            baseline: false, checked: 2, exported: 1, toRetry: 1,
+            lastError: nil, anchorSaveError: nil, settleWaits: 1
+        )
+        let baselineWithoutICloud = SyncSummary.text(
+            baseline: true, checked: 321, exported: 0, toRetry: 0,
+            lastError: nil, anchorSaveError: nil, waitingForICloud: 0
+        )
+
+        #expect(unavailable == "iCloud Drive unavailable; 3 waiting")
+        #expect(settling == "Checked 2 new workout(s), exported 1, 1 to retry; 1 waiting for the route to settle")
+        #expect(baselineWithoutICloud == "Baseline taken; 321 existing workout(s) left for Export All New")
     }
 
     @Test func routeSegmentsJoinInTimeOrder() {

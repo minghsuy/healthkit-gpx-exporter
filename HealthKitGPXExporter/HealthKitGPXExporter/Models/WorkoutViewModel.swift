@@ -168,18 +168,21 @@ class WorkoutViewModel: ObservableObject {
                 continue
             }
             do {
-                // The user is present, so a local fallback counts as exported,
-                // with a note below; background export retries it instead.
                 guard let file = try await workoutExporter.export(workout) else {
                     exportProgress.current += 1
                     continue
                 }
-                if file.destination == .localFallback {
-                    savedLocally += 1
-                }
                 guard BackgroundSyncManager.generation.isCurrent(token) else {
                     abandoned = true
                     break
+                }
+                // Done means iCloud Drive, as in background export: the local
+                // Documents folder is not visible to the user, so a local
+                // copy is not marked and the workout stays in Export All New.
+                if file.destination == .localFallback {
+                    savedLocally += 1
+                    exportProgress.current += 1
+                    continue
                 }
 
                 if !exportedStore.markExported(
@@ -201,17 +204,19 @@ class WorkoutViewModel: ObservableObject {
         // a run of failed exports must still void the earlier marks.
         abandoned = abandoned || !BackgroundSyncManager.generation.isCurrent(token)
 
+        // "Last Export" doubles as the v1 cutoff when the record file is
+        // absent at launch, so it moves only when every mark reached disk.
+        if !abandoned, !recordSaveFailed, exportedCount > 0 {
+            lastExportDate = Date()
+        }
         if abandoned {
             errorMessage = "Export stopped: export history was reset."
+        } else if savedLocally > 0 {
+            errorMessage = "iCloud Drive unavailable: \(savedLocally) saved on this iPhone only; they stay in Export All New."
         } else if recordSaveFailed {
-            // "Last Export" doubles as the v1 cutoff when the record file is
-            // absent at launch, so it must not move past unrecorded exports.
             errorMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s"), but the export record could not be saved. They may be offered again after a restart."
         } else if exportedCount > 0 {
-            lastExportDate = Date()
-            successMessage = savedLocally == 0
-                ? "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive."
-                : "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s"). iCloud Drive was unavailable, so \(savedLocally) \(savedLocally == 1 ? "is" : "are") only in this iPhone's Documents folder."
+            successMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive."
         }
 
         isExporting = false
