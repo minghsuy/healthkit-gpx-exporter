@@ -1,10 +1,12 @@
 # HealthKit GPX Exporter
 
 An iOS app that exports cycling workouts from Apple Health to GPX files, with
-the full route and matched heart rate. Files go to
-`iCloud Drive/Bike-Ride-Analyzer/imports/`, or to the app's Documents folder
-when iCloud Drive is off. The app makes no network calls and has no
-third-party dependencies.
+the full route and matched heart rate. Files go to the app's iCloud container,
+shown in iCloud Drive as `HealthKitGPXExporter/Bike-Ride-Analyzer/imports/`
+(on a Mac: `~/Library/Mobile Documents/iCloud~com~minghsuy~HealthKitGPXExporter/Documents/Bike-Ride-Analyzer/imports/`),
+or to the app's Documents folder when iCloud Drive is off. The app itself makes
+no network requests (iOS syncs the iCloud folder) and has no third-party
+dependencies.
 
 ## GPX v2 metadata
 
@@ -40,7 +42,9 @@ structured elements in the
   `HealthKitGPXExporter` prefix.
 - **Filenames** are `workout_yyyy-MM-dd_HHmmss_<first 8 of the workout
   UUID>.gpx`, so two workouts that start in the same second no longer
-  overwrite each other. v1 files keep their names.
+  overwrite each other. v1 files are not renamed or removed, so re-exporting
+  a ride v1 already exported, or exporting after Reset, writes a second file
+  for that ride next to the v1 one.
 - **Text cleanup.** Characters that XML 1.0 forbids (control characters
   other than tab, LF and CR, and U+FFFE/U+FFFF) are dropped from text values,
   so an odd app or device name cannot make a file unparseable.
