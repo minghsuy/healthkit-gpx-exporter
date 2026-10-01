@@ -159,6 +159,11 @@ enum SyncSummary {
 /// delivery wakes the app, and an HKAnchoredObjectQuery returns the workouts
 /// added since the persisted anchor. A second observer on workout routes
 /// wakes the app when a route lands after its workout.
+///
+/// Main-actor isolated (also the target default, SWIFT_DEFAULT_ACTOR_ISOLATION):
+/// `isSyncing`, `syncRequested`, the ledger and the generation token rely on
+/// every wake running here, so overlapping wakes serialise at each `await`.
+@MainActor
 final class BackgroundSyncManager {
     static let shared = BackgroundSyncManager()
 
