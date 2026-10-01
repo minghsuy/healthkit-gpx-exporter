@@ -139,9 +139,20 @@ ride that another app syncs hours later is still exported.
   All New". While any workout waits (for iCloud Drive or for its route to
   settle), the sync position is not moved forward.
 - **Errors are shown, not hidden.** Settings > Background Sync shows the
-  last result when you open it. If the export record cannot be read, the app refuses to
-  overwrite it and disables "Export All New"; "Reset Export History" clears
-  the record, the sync anchor and the retry list.
+  last result when you open it. If the export record cannot be read (for
+  example before the first unlock after a restart), the app refuses to
+  overwrite it, disables "Export All New" with a note saying why, and pauses
+  background export: a pass then exports nothing and moves nothing forward,
+  so no ride is exported twice and none is skipped. The app reads the record
+  again on every pass, on refresh and whenever it comes to the foreground,
+  and carries on once it reads. "Reset Export History" clears the record,
+  the sync anchor and the retry list.
+- **Unreadable sync position.** If the saved sync anchor cannot be read,
+  background export pauses rather than starting over silently, and Settings
+  offers "Restart Background Sync". That clears only the anchor and takes a
+  fresh starting point; the export record and retry list are kept, so
+  nothing already exported is offered again. Rides added while it was paused
+  are not exported automatically; they stay in "Export All New".
 - **Unsaved record.** If the export record cannot be written, the app does
   not move its sync position, "Last Export" or the retry list forward, and
   Settings says "export record could not be saved; will retry". A later wake

@@ -83,4 +83,72 @@ struct SyncGuardTests {
 
         #expect(text.hasSuffix("; last error: no route; could not save sync position: disk full"))
     }
+
+    // MARK: - Preflight: unreadable anchor or record
+
+    private struct DecodeFailed: Error {}
+
+    @Test func anchorStateIsClassifiedWithoutAHealthKitAnchor() {
+        let readable: (Data) throws -> Any? = { _ in "anchor" }
+        let throwing: (Data) throws -> Any? = { _ in throw DecodeFailed() }
+        let wrongType: (Data) throws -> Any? = { _ in nil }
+
+        #expect(StoredAnchorState.classify(nil, decode: readable) == .missing)
+        #expect(StoredAnchorState.classify(Data([1]), decode: readable) == .readable)
+        #expect(StoredAnchorState.classify(Data([1]), decode: throwing) == .unreadable)
+        #expect(StoredAnchorState.classify(Data([1]), decode: wrongType) == .unreadable)
+    }
+
+    @Test func passRunsOnlyWithAReadableRecordAndNoUnreadableAnchor() {
+        #expect(SyncPreflight.decision(anchor: .readable, ledgerReadable: true) == .run)
+        // Missing anchor: the pass is a baseline, which exports nothing.
+        #expect(SyncPreflight.decision(anchor: .missing, ledgerReadable: true) == .run)
+        #expect(SyncPreflight.decision(anchor: .readable, ledgerReadable: false) == .skipUnreadableLedger)
+        #expect(SyncPreflight.decision(anchor: .missing, ledgerReadable: false) == .skipUnreadableLedger)
+        #expect(SyncPreflight.decision(anchor: .unreadable, ledgerReadable: true) == .skipUnreadableAnchor)
+        #expect(SyncPreflight.decision(anchor: .unreadable, ledgerReadable: false) == .skipUnreadableAnchor)
+    }
+
+    @Test func skipMessagesNameTheRecovery() {
+        #expect(SyncPreflight.skipMessage(.run, anchorError: nil) == nil)
+
+        let anchor = SyncPreflight.skipMessage(.skipUnreadableAnchor, anchorError: "bad data")
+        let ledger = SyncPreflight.skipMessage(.skipUnreadableLedger, anchorError: nil)
+
+        #expect(anchor == "Sync paused: the saved sync position could not be read (bad data). "
+            + "Tap Restart Background Sync; workouts added meanwhile stay in Export All New")
+        #expect(ledger == "Sync paused: export history could not be read, so nothing was exported. "
+            + "It resumes once the file reads again, or after Reset Export History")
+    }
+
+    @Test func restartClearsOnlyAnUnreadableAnchorAndKeepsTheRetryList() throws {
+        let suite = "SyncGuardTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let retry = [UUID().uuidString: Date()]
+        defaults.set(Data([1, 2, 3]), forKey: BackgroundSyncManager.anchorKey)
+        defaults.set(retry, forKey: BackgroundSyncManager.retryKey)
+        let token = BackgroundSyncManager.generation.value
+
+        let cleared = BackgroundSyncManager.restartSyncIfAnchorUnreadable(in: defaults, decode: { _ in throw DecodeFailed() })
+
+        #expect(cleared)
+        #expect(defaults.object(forKey: BackgroundSyncManager.anchorKey) == nil)
+        #expect(defaults.dictionary(forKey: BackgroundSyncManager.retryKey) as? [String: Date] == retry)
+        // Not a Reset: in-flight manual exports keep their marks.
+        #expect(BackgroundSyncManager.generation.isCurrent(token))
+        #expect(BackgroundSyncManager.storedAnchorState(in: defaults, decode: { _ in "anchor" }) == .missing)
+    }
+
+    @Test func restartLeavesAReadableAnchorAlone() throws {
+        let suite = "SyncGuardTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(Data([1, 2, 3]), forKey: BackgroundSyncManager.anchorKey)
+
+        let cleared = BackgroundSyncManager.restartSyncIfAnchorUnreadable(in: defaults, decode: { _ in "anchor" })
+
+        #expect(!cleared)
+        #expect(defaults.data(forKey: BackgroundSyncManager.anchorKey) == Data([1, 2, 3]))
+    }
 }
