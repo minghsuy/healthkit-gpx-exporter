@@ -144,15 +144,15 @@ agent.
    "Unverified" below). Once a run uploads, the build shows up in App Store
    Connect → TestFlight after processing.
 
-### Owner decision: export compliance
+### Export compliance (owner decision, 2026-09-30)
 
-`Info.plist` does not set `ITSAppUsesNonExemptEncryption`, and the generated
-Info.plist does not add it either. Until it is set, TestFlight asks the
-encryption question for every uploaded build, and the build cannot go to
-testers until someone answers. An app whose only encryption is HTTPS through
-Apple's system frameworks usually qualifies as exempt, which would mean adding
-`ITSAppUsesNonExemptEncryption = NO`. This is a legal declaration, so CI leaves
-it for the owner to decide and add.
+`Info.plist` sets `ITSAppUsesNonExemptEncryption = NO`. The owner declared it:
+the app makes no network requests (iOS performs the iCloud Drive sync), and
+any future upload to the owner's own server would use standard HTTPS through
+Apple's system frameworks, which is exempt. With the key set, TestFlight no
+longer asks the encryption question per build. Builds uploaded before the key
+landed still need the question answered once in App Store Connect. Revisit
+this only if the app adds its own cryptography; it is a legal declaration.
 
 ### Unverified until the first real run
 
