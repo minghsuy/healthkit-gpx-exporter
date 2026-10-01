@@ -124,15 +124,30 @@ final class ExportedWorkoutStore {
         }
     }
 
-    func markExported(_ candidate: WorkoutCandidate) {
+    /// Whether in-memory changes are not yet on disk. While true, callers
+    /// must not record progress elsewhere (the sync anchor, the retry list,
+    /// "Last Export") that assumes this record survives a relaunch.
+    private(set) var hasUnsavedChanges = false
+
+    /// Returns whether the change reached disk.
+    @discardableResult
+    func markExported(_ candidate: WorkoutCandidate) -> Bool {
         ledger.markExported(candidate)
-        save()
+        return save()
     }
 
-    func removeDeleted(_ uuids: [UUID]) {
-        guard uuids.contains(where: { ledger.contains($0) }) else { return }
+    /// Returns whether the change reached disk; true when nothing changed.
+    @discardableResult
+    func removeDeleted(_ uuids: [UUID]) -> Bool {
+        guard uuids.contains(where: { ledger.contains($0) }) else { return !hasUnsavedChanges }
         ledger.remove(uuids)
-        save()
+        return save()
+    }
+
+    /// Retries an earlier failed save. Returns whether the record is on disk.
+    @discardableResult
+    func flush() -> Bool {
+        hasUnsavedChanges ? save() : true
     }
 
     /// "Reset Export History": every workout becomes new again. This is the
@@ -148,15 +163,18 @@ final class ExportedWorkoutStore {
         try JSONDecoder().decode(ExportLedger.self, from: Data(contentsOf: fileURL))
     }
 
-    private func save() {
-        guard let fileURL else { return }
+    @discardableResult
+    private func save() -> Bool {
+        guard let fileURL else { return true }
+        // Cleared only by a write that succeeds below.
+        hasUnsavedChanges = true
         if loadError != nil {
             // The read may have failed transiently (for example a launch
             // before first unlock). If the file reads now, merge it in and
             // carry on; otherwise keep refusing to overwrite it.
             guard let stored = try? Self.read(fileURL) else {
                 lastSaveError = "Export history not saved: the existing file could not be read"
-                return
+                return false
             }
             ledger = ledger.merging(stored)
             loadError = nil
@@ -171,8 +189,11 @@ final class ExportedWorkoutStore {
             // must stay writable after the first unlock since boot.
             try data.write(to: fileURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
             lastSaveError = nil
+            hasUnsavedChanges = false
+            return true
         } catch {
             lastSaveError = "Could not save export history: \(error.localizedDescription)"
+            return false
         }
     }
 }

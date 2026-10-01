@@ -97,6 +97,32 @@ struct ExportStateTests {
         #expect(saved.contains(onDisk.uuid) && saved.contains(inMemory.uuid))
     }
 
+    @Test func failedWriteIsReportedAndFlushRetriesIt() throws {
+        // A regular file where the record's directory should be makes every
+        // write fail, the way an unwritable or protected location would.
+        let blocker = tempFile()
+        defer { try? FileManager.default.removeItem(at: blocker) }
+        try Data().write(to: blocker)
+        let file = blocker.appendingPathComponent("exported-workouts.json")
+        let store = ExportedWorkoutStore(fileURL: file)
+        let ride = WorkoutCandidate(uuid: UUID(), startDate: start)
+
+        #expect(!store.markExported(ride))
+        #expect(store.hasUnsavedChanges)
+        #expect(store.lastSaveError != nil)
+        #expect(store.ledger.contains(ride.uuid))
+        #expect(!store.flush())
+        #expect(!store.removeDeleted([UUID()]))
+
+        // Storage recovers: the next flush writes the held record.
+        try FileManager.default.removeItem(at: blocker)
+        #expect(store.flush())
+        #expect(!store.hasUnsavedChanges)
+        #expect(store.lastSaveError == nil)
+        let saved = try JSONDecoder().decode(ExportLedger.self, from: Data(contentsOf: file))
+        #expect(saved.contains(ride.uuid))
+    }
+
     @Test func mergingKeepsBothSidesAndTheFirstCutoff() {
         let a = WorkoutCandidate(uuid: UUID(), startDate: start)
         let b = WorkoutCandidate(uuid: UUID(), startDate: start)

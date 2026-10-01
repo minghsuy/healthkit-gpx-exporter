@@ -155,6 +155,7 @@ class WorkoutViewModel: ObservableObject {
         // A Reset during this loop must not be undone by its later marks.
         let token = BackgroundSyncManager.generation.value
         var abandoned = false
+        var recordSaveFailed = false
 
         for cyclingWorkout in workoutsToExport {
             if skippingExported, exportedStore.ledger.contains(cyclingWorkout.id) {
@@ -175,9 +176,11 @@ class WorkoutViewModel: ObservableObject {
                     break
                 }
 
-                exportedStore.markExported(
+                if !exportedStore.markExported(
                     WorkoutCandidate(uuid: cyclingWorkout.id, startDate: cyclingWorkout.date)
-                )
+                ) {
+                    recordSaveFailed = true
+                }
                 exportedCount += 1
                 exportProgress.current += 1
 
@@ -194,6 +197,10 @@ class WorkoutViewModel: ObservableObject {
 
         if abandoned {
             errorMessage = "Export stopped: export history was reset."
+        } else if recordSaveFailed {
+            // "Last Export" doubles as the v1 cutoff when the record file is
+            // absent at launch, so it must not move past unrecorded exports.
+            errorMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s"), but the export record could not be saved. They may be offered again after a restart."
         } else if exportedCount > 0 {
             lastExportDate = Date()
             successMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive."

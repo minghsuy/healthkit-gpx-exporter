@@ -78,5 +78,10 @@ ride that another app syncs hours later is still exported.
   last result when you open it. If the export record cannot be read, the app refuses to
   overwrite it and disables "Export All New"; "Reset Export History" clears
   the record, the sync anchor and the retry list.
+- **Unsaved record.** If the export record cannot be written, the app does
+  not move its sync position, "Last Export" or the retry list forward, and
+  Settings says "export record could not be saved; will retry". A later wake
+  covers the same workouts again; re-exporting one overwrites the same file,
+  since filenames are fixed per workout.
 - Background delivery needs the HealthKit Background Delivery capability on
   the App ID and only works on a device, not in the Simulator.

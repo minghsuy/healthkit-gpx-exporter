@@ -35,6 +35,23 @@ struct SyncGeneration {
     }
 }
 
+/// Whether a finished pass may move the sync anchor forward. Plain Swift so
+/// the rule is unit-testable.
+enum AnchorCommit {
+    enum Decision: Equatable {
+        case save
+        /// Keep the old anchor: the next wake re-fetches the same range.
+        case keep
+    }
+
+    /// The anchor says "everything before here is handled". That is only
+    /// true once the export record holding those workouts is on disk; if the
+    /// app died with the record unsaved, an advanced anchor would lose them.
+    static func decision(ledgerWritesSucceeded: Bool, generationCurrent: Bool) -> Decision {
+        ledgerWritesSucceeded && generationCurrent ? .save : .keep
+    }
+}
+
 /// The Settings line for one finished pass. Plain Swift so the wording,
 /// including a failed anchor save, is unit-testable.
 enum SyncSummary {
@@ -44,13 +61,17 @@ enum SyncSummary {
         exported: Int,
         toRetry: Int,
         lastError: String?,
-        anchorSaveError: String?
+        anchorSaveError: String?,
+        ledgerSaveFailed: Bool = false
     ) -> String {
         var summary = baseline
             ? "Baseline taken; \(checked) existing workout(s) left for Export All New"
             : "Checked \(checked) new workout(s), exported \(exported), \(toRetry) to retry"
         if let lastError {
             summary += "; last error: \(lastError)"
+        }
+        if ledgerSaveFailed {
+            summary += "; export record could not be saved; will retry"
         }
         if let anchorSaveError {
             // Without a saved anchor the next wake replays this pass.
@@ -184,7 +205,10 @@ final class BackgroundSyncManager {
             record("Sync abandoned: export history was reset during the pass")
             return
         }
-        exportedStore.removeDeleted(result.deleted)
+        // Re-fetching a range already handled re-exports a workout to the
+        // same deterministic filename, overwriting it; that is the accepted
+        // cost of not advancing the anchor while the record is unsaved.
+        var ledgerWritesSucceeded = exportedStore.removeDeleted(result.deleted)
 
         let added = result.workouts.map { WorkoutCandidate(uuid: $0.uuid, startDate: $0.startDate) }
         let selected = Set(
@@ -203,6 +227,16 @@ final class BackgroundSyncManager {
         for uuid in retryLookup.unresolved {
             if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[uuid], now: now) {
                 retry[uuid] = firstSeen
+            }
+        }
+        // Retry-list workouts the in-memory record already holds are skipped
+        // below; while that record is unsaved they stay listed, because the
+        // anchor is already past them and a relaunch would lose them.
+        if exportedStore.hasUnsavedChanges {
+            for workout in retryLookup.workouts where exportedStore.ledger.contains(workout.uuid) {
+                if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
+                    retry[workout.uuid] = firstSeen
+                }
             }
         }
         var exported = 0
@@ -226,7 +260,15 @@ final class BackgroundSyncManager {
             }
             if filename != nil {
                 exported += 1
-                exportedStore.markExported(WorkoutCandidate(uuid: workout.uuid, startDate: workout.startDate))
+                if !exportedStore.markExported(WorkoutCandidate(uuid: workout.uuid, startDate: workout.startDate)) {
+                    // Exported but not recorded on disk: keep it on the retry
+                    // list so a relaunch, which loses the in-memory record,
+                    // still finishes it.
+                    ledgerWritesSucceeded = false
+                    if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
+                        retry[workout.uuid] = firstSeen
+                    }
+                }
             } else if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
                 // No route yet, or the export failed: try again next wake.
                 retry[workout.uuid] = firstSeen
@@ -240,16 +282,26 @@ final class BackgroundSyncManager {
             record("Sync abandoned: export history was reset during the pass")
             return
         }
+        // An earlier failed save gets another chance here, so a later wake
+        // over the same range can still advance once storage recovers.
+        ledgerWritesSucceeded = exportedStore.flush() && ledgerWritesSucceeded
         saveRetryList(retry)
         var anchorSaveError: String?
-        if let anchor = result.anchor {
+        let commit = AnchorCommit.decision(
+            ledgerWritesSucceeded: ledgerWritesSucceeded,
+            generationCurrent: Self.generation.isCurrent(token)
+        )
+        if commit == .save, let anchor = result.anchor {
             do {
                 try saveAnchor(anchor)
             } catch {
                 anchorSaveError = error.localizedDescription
             }
         }
-        if exported > 0 {
+        // "Last Export" doubles as the v1 cutoff when the record file is
+        // absent at launch, so it must not move past exports the record
+        // failed to hold.
+        if exported > 0, ledgerWritesSucceeded {
             UserDefaults.standard.set(Date(), forKey: Self.lastExportDateKey)
         }
         record(SyncSummary.text(
@@ -258,7 +310,8 @@ final class BackgroundSyncManager {
             exported: exported,
             toRetry: retry.count,
             lastError: lastError,
-            anchorSaveError: anchorSaveError
+            anchorSaveError: anchorSaveError,
+            ledgerSaveFailed: !ledgerWritesSucceeded
         ))
     }
 

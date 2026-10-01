@@ -59,6 +59,22 @@ struct SyncGuardTests {
         #expect(baseline == "Baseline taken; 321 existing workout(s) left for Export All New")
     }
 
+    @Test func anchorAdvancesOnlyWhenRecordIsSavedAndGenerationCurrent() {
+        #expect(AnchorCommit.decision(ledgerWritesSucceeded: true, generationCurrent: true) == .save)
+        #expect(AnchorCommit.decision(ledgerWritesSucceeded: false, generationCurrent: true) == .keep)
+        #expect(AnchorCommit.decision(ledgerWritesSucceeded: true, generationCurrent: false) == .keep)
+        #expect(AnchorCommit.decision(ledgerWritesSucceeded: false, generationCurrent: false) == .keep)
+    }
+
+    @Test func summaryReportsAnUnsavedRecord() {
+        let text = SyncSummary.text(
+            baseline: false, checked: 1, exported: 1, toRetry: 1,
+            lastError: nil, anchorSaveError: nil, ledgerSaveFailed: true
+        )
+
+        #expect(text == "Checked 1 new workout(s), exported 1, 1 to retry; export record could not be saved; will retry")
+    }
+
     @Test func summaryKeepsBothExportAndAnchorErrors() {
         let text = SyncSummary.text(
             baseline: false, checked: 1, exported: 0, toRetry: 1,
