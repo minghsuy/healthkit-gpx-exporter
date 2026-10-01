@@ -30,6 +30,24 @@ struct SettingsView: View {
                 }
             }
 
+            Section("Background Sync") {
+                Text(BackgroundSyncManager.shared.lastResult ?? "No background sync yet.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                if let loadError = ExportedWorkoutStore.shared.loadError {
+                    Text(loadError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+
+                if let saveError = ExportedWorkoutStore.shared.lastSaveError {
+                    Text(saveError)
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                }
+            }
+
             Section("Status") {
                 HStack {
                     Text("iCloud Drive")
