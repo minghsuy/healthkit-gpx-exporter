@@ -30,6 +30,16 @@ struct CyclingWorkout: Identifiable {
     }
 }
 
+/// Whether a foreground refresh should run a background pass. Plain Swift so
+/// the rule is unit-testable. Only a record that was unreadable and now
+/// reads: passes paused on it left rides behind the unchanged anchor, and no
+/// HealthKit wake may come to pick them up. Any other foreground is a no-op.
+enum ForegroundRecovery {
+    static func shouldResumeSync(wasUnreadable: Bool, isUnreadable: Bool) -> Bool {
+        wasUnreadable && !isUnreadable
+    }
+}
+
 @MainActor
 class WorkoutViewModel: ObservableObject {
     @Published var workouts: [CyclingWorkout] = []
@@ -76,10 +86,17 @@ class WorkoutViewModel: ObservableObject {
     /// Retries a record that failed to read at launch (say, before first
     /// unlock), so "Export All New" re-enables without a relaunch, then
     /// writes exports held in memory meanwhile, which clears the save error.
-    func refreshExportHistory() {
+    /// Returns whether a paused background sync should resume now.
+    @discardableResult
+    func refreshExportHistory() -> Bool {
+        let wasUnreadable = exportHistoryUnavailable
         if exportedStore.reloadIfUnreadable() {
             exportedStore.flush()
         }
+        return ForegroundRecovery.shouldResumeSync(
+            wasUnreadable: wasUnreadable,
+            isUnreadable: exportHistoryUnavailable
+        )
     }
 
     func isExported(_ workout: CyclingWorkout) -> Bool {

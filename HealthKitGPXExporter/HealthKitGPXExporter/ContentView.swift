@@ -36,8 +36,9 @@ struct ContentView: View {
             await viewModel.requestAuthorization()
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active {
-                viewModel.refreshExportHistory()
+            // sync() coalesces with a pass already running.
+            if phase == .active, viewModel.refreshExportHistory() {
+                Task { await BackgroundSyncManager.shared.sync() }
             }
         }
         .alert("Error", isPresented: isShowingError) {

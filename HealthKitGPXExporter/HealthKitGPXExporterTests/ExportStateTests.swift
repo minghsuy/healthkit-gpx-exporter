@@ -124,6 +124,28 @@ struct ExportStateTests {
         #expect(store.reloadIfUnreadable())
     }
 
+    @Test func syncResumesOnlyWhenTheRecordRecovers() {
+        #expect(ForegroundRecovery.shouldResumeSync(wasUnreadable: true, isUnreadable: false))
+        #expect(!ForegroundRecovery.shouldResumeSync(wasUnreadable: true, isUnreadable: true))
+        #expect(!ForegroundRecovery.shouldResumeSync(wasUnreadable: false, isUnreadable: false))
+        #expect(!ForegroundRecovery.shouldResumeSync(wasUnreadable: false, isUnreadable: true))
+    }
+
+    @Test func refreshReportsRecoveryOnce() throws {
+        let file = tempFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("not json".utf8).write(to: file)
+        let viewModel = WorkoutViewModel(exportedStore: ExportedWorkoutStore(fileURL: file))
+
+        #expect(!viewModel.refreshExportHistory())
+
+        try JSONEncoder().encode(ExportLedger()).write(to: file)
+
+        #expect(viewModel.refreshExportHistory())
+        // Already readable: a later foreground does not sync again.
+        #expect(!viewModel.refreshExportHistory())
+    }
+
     @Test func reloadKeepsExportsMadeWhileTheRecordWasUnreadable() throws {
         let file = tempFile()
         defer { try? FileManager.default.removeItem(at: file) }
