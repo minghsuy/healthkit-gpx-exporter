@@ -188,6 +188,9 @@ class WorkoutViewModel: ObservableObject {
                 errorMessage = "Failed to export workout: \(error.localizedDescription)"
             }
         }
+        // The in-loop check only follows a successful export; a Reset during
+        // a run of failed exports must still void the earlier marks.
+        abandoned = abandoned || !BackgroundSyncManager.generation.isCurrent(token)
 
         if abandoned {
             errorMessage = "Export stopped: export history was reset."
