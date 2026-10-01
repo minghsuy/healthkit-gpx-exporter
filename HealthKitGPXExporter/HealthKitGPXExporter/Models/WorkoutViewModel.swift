@@ -157,6 +157,7 @@ class WorkoutViewModel: ObservableObject {
         var abandoned = false
         var recordSaveFailed = false
         var savedLocally = 0
+        var notSettled = 0
 
         for cyclingWorkout in workoutsToExport {
             if skippingExported, exportedStore.ledger.contains(cyclingWorkout.id) {
@@ -176,13 +177,26 @@ class WorkoutViewModel: ObservableObject {
                     abandoned = true
                     break
                 }
-                // Done means iCloud Drive, as in background export: the local
-                // Documents folder is not visible to the user, so a local
-                // copy is not marked and the workout stays in Export All New.
-                if file.destination == .localFallback {
+                // Done means iCloud Drive and a settled route, as in
+                // background export. The local Documents folder is not
+                // visible to the user, and a just-finished ride may still be
+                // receiving route samples; neither is marked.
+                let settle = RouteSettle.eligibility(
+                    endDate: workout.endDate,
+                    firstSeen: BackgroundSyncManager.retryFirstSeen(workout.uuid),
+                    now: Date()
+                )
+                switch ManualExportRule.outcome(destination: file.destination, settle: settle) {
+                case .localOnly:
                     savedLocally += 1
                     exportProgress.current += 1
                     continue
+                case .notSettled:
+                    notSettled += 1
+                    exportProgress.current += 1
+                    continue
+                case .markDone:
+                    break
                 }
 
                 if !exportedStore.markExported(
@@ -217,12 +231,21 @@ class WorkoutViewModel: ObservableObject {
         if recordSaveFailed {
             problems.append("Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s"), but the export record could not be saved. They may be offered again after a restart.")
         }
+        // Not a problem, but the user should know these are not final.
+        var notes: [String] = []
+        if notSettled > 0 {
+            notes.append("\(notSettled) just-finished ride\(notSettled == 1 ? "" : "s") exported; \(notSettled == 1 ? "it'll" : "they'll") be re-exported once the route is complete.")
+        }
         if abandoned {
             errorMessage = "Export stopped: export history was reset."
         } else if !problems.isEmpty {
-            errorMessage = problems.joined(separator: " ")
-        } else if exportedCount > 0 {
-            successMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive."
+            errorMessage = (problems + notes).joined(separator: " ")
+        } else if exportedCount > 0 || !notes.isEmpty {
+            var lines: [String] = []
+            if exportedCount > 0 {
+                lines.append("Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive.")
+            }
+            successMessage = (lines + notes).joined(separator: " ")
         }
 
         isExporting = false

@@ -20,14 +20,15 @@ enum RetryAdmission {
 
 /// Whether a workout's route can be treated as complete. HealthKit has no
 /// "route finished" flag: a recorder saves the workout, then the route, and
-/// some add route segments a little later. Waiting a while after the
-/// workout ends, and requiring at least one route sample, is the best signal
-/// available.
+/// some add route segments a little later. Waiting a while, and requiring at
+/// least one route sample, is the best signal available.
 enum RouteSettle {
-    /// How long after a workout ends background export waits before reading
-    /// its route. Ten minutes covers recorders that
-    /// sync the route shortly after the workout; a later wake or the route
-    /// observer picks the workout up once it has passed.
+    /// How long export waits before treating a route as complete, counted
+    /// from the later of the workout's end and when this app first saw it.
+    /// The end alone is not enough: a ride another app syncs days later
+    /// ended long ago, yet its route samples are still arriving now. Ten
+    /// minutes covers recorders that save the route shortly after the
+    /// workout; a later wake or the route observer picks it up afterwards.
     static let minimumDelay: TimeInterval = 10 * 60
 
     enum Eligibility: Equatable {
@@ -35,8 +36,11 @@ enum RouteSettle {
         case wait
     }
 
-    static func eligibility(endDate: Date, now: Date) -> Eligibility {
-        now.timeIntervalSince(endDate) >= minimumDelay ? .eligible : .wait
+    /// `firstSeen` nil means the app has no record of first seeing the
+    /// workout, so only the end date counts.
+    static func eligibility(endDate: Date, firstSeen: Date?, now: Date) -> Eligibility {
+        let settlesFrom = max(endDate, firstSeen ?? endDate)
+        return now.timeIntervalSince(settlesFrom) >= minimumDelay ? .eligible : .wait
     }
 }
 
@@ -331,9 +335,11 @@ final class BackgroundSyncManager {
             if exportedStore.ledger.contains(workout.uuid) {
                 continue
             }
-            // Too soon after the workout ended: its route may still be
-            // arriving. Wait without exporting a partial track.
-            if RouteSettle.eligibility(endDate: workout.endDate, now: now) == .wait {
+            // Too soon after the workout ended, or after this app first saw
+            // it: its route may still be arriving. Wait without exporting a
+            // partial track. A workout first seen in this pass starts now.
+            let firstSeen = previousRetry[workout.uuid] ?? now
+            if RouteSettle.eligibility(endDate: workout.endDate, firstSeen: firstSeen, now: now) == .wait {
                 settleWaits += 1
                 if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
                     retry[workout.uuid] = firstSeen
@@ -453,6 +459,12 @@ final class BackgroundSyncManager {
             }
         }
         return list
+    }
+
+    /// When background sync first saw this workout, if it is on the retry
+    /// list. The manual export path uses it for the same settle rule.
+    static func retryFirstSeen(_ uuid: UUID, in defaults: UserDefaults = .standard) -> Date? {
+        (defaults.dictionary(forKey: retryKey) as? [String: Date])?[uuid.uuidString]
     }
 
     private func saveRetryList(_ list: [UUID: Date]) {

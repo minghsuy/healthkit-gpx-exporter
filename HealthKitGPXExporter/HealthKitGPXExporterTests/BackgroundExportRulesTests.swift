@@ -6,18 +6,55 @@ import Foundation
 struct BackgroundExportRulesTests {
     private let now = Date(timeIntervalSince1970: 1_790_000_000)
 
+    private func minutesAgo(_ minutes: Double) -> Date {
+        now.addingTimeInterval(-minutes * 60)
+    }
+
     @Test func workoutThatEndedThreeMinutesAgoWaits() {
-        #expect(RouteSettle.eligibility(endDate: now.addingTimeInterval(-3 * 60), now: now) == .wait)
+        #expect(RouteSettle.eligibility(endDate: minutesAgo(3), firstSeen: minutesAgo(3), now: now) == .wait)
+        #expect(RouteSettle.eligibility(endDate: minutesAgo(3), firstSeen: nil, now: now) == .wait)
     }
 
     @Test func workoutThatEndedFifteenMinutesAgoIsEligible() {
-        #expect(RouteSettle.eligibility(endDate: now.addingTimeInterval(-15 * 60), now: now) == .eligible)
+        #expect(RouteSettle.eligibility(endDate: minutesAgo(15), firstSeen: minutesAgo(15), now: now) == .eligible)
+        #expect(RouteSettle.eligibility(endDate: minutesAgo(15), firstSeen: nil, now: now) == .eligible)
+    }
+
+    @Test func lateSyncedWorkoutSettlesFromWhenItWasFirstSeen() {
+        let threeDaysAgo = minutesAgo(3 * 24 * 60)
+        #expect(RouteSettle.eligibility(endDate: threeDaysAgo, firstSeen: minutesAgo(2), now: now) == .wait)
+        #expect(RouteSettle.eligibility(endDate: threeDaysAgo, firstSeen: minutesAgo(11), now: now) == .eligible)
+        // First seen in this pass: background passes firstSeen = now.
+        #expect(RouteSettle.eligibility(endDate: threeDaysAgo, firstSeen: now, now: now) == .wait)
     }
 
     @Test func settleDelayIsTenMinutesInclusive() {
         #expect(RouteSettle.minimumDelay == 10 * 60)
-        #expect(RouteSettle.eligibility(endDate: now.addingTimeInterval(-10 * 60), now: now) == .eligible)
-        #expect(RouteSettle.eligibility(endDate: now.addingTimeInterval(-10 * 60 + 1), now: now) == .wait)
+        #expect(RouteSettle.eligibility(endDate: minutesAgo(10), firstSeen: nil, now: now) == .eligible)
+        #expect(RouteSettle.eligibility(endDate: now.addingTimeInterval(-10 * 60 + 1), firstSeen: nil, now: now) == .wait)
+    }
+
+    @Test func manualExportMarksOnlySettledICloudWrites() {
+        #expect(ManualExportRule.outcome(destination: .iCloud, settle: .eligible) == .markDone)
+        #expect(ManualExportRule.outcome(destination: .iCloud, settle: .wait) == .notSettled)
+        #expect(ManualExportRule.outcome(destination: .localFallback, settle: .eligible) == .localOnly)
+        #expect(ManualExportRule.outcome(destination: .localFallback, settle: .wait) == .localOnly)
+    }
+
+    @Test func manualExportUsesTheRetryListFirstSeen() throws {
+        let suite = "BackgroundExportRulesTests-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let listed = UUID()
+        defaults.set([listed.uuidString: minutesAgo(2)], forKey: BackgroundSyncManager.retryKey)
+
+        let firstSeen = BackgroundSyncManager.retryFirstSeen(listed, in: defaults)
+
+        #expect(firstSeen == minutesAgo(2))
+        #expect(BackgroundSyncManager.retryFirstSeen(UUID(), in: defaults) == nil)
+        // Ended long ago but seen 2 minutes ago: a manual export is not marked.
+        let settle = RouteSettle.eligibility(endDate: minutesAgo(3 * 24 * 60), firstSeen: firstSeen, now: now)
+        #expect(ManualExportRule.outcome(destination: .iCloud, settle: settle) == .notSettled)
     }
 
     @Test func onlyAnICloudWriteIsMarked() {

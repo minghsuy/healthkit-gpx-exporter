@@ -74,12 +74,17 @@ ride that another app syncs hours later is still exported.
   from v1, workouts that started before the last v1 export count as already
   exported.
 - **Complete routes only.** HealthKit saves a route after its workout, and
-  has no "route finished" flag. Background export waits until 10 minutes
-  after a workout ends, then joins every route sample of the workout in time
-  order (a pause or GPS gap can split a route into several). A workout that
-  ended too recently, or has no route yet, is retried when a route is saved
-  and on later wakes, for up to seven days after the app first sees it.
-  Without such a wake, it waits for the next one or the next app launch.
+  has no "route finished" flag. Export waits until 10 minutes after the
+  later of the workout's end and when the app first saw it, so a ride that
+  another app syncs days late still gets 10 minutes for its route to arrive.
+  It then joins every route sample of the workout in time order (a pause or
+  GPS gap can split a route into several). A workout that is not settled
+  yet, or has no route yet, is retried when a route is saved and on later
+  wakes, for up to seven days after the app first sees it. Without such a
+  wake, it waits for the next one or the next app launch. A manual export
+  of a ride that has not settled still writes the file, but is not marked
+  done: background export re-exports it once settled, overwriting the same
+  file, and the export message says so.
 - **Done means iCloud Drive.** An export counts as done only once the file is
   in iCloud Drive, for background and manual exports alike. The app's own
   Documents folder is not visible to you, so a file there reaches nobody.
@@ -115,5 +120,9 @@ These can only be verified on a device:
    export with iCloud Drive off reports "saved on this iPhone only", and the
    workouts stay in "Export All New".
 4. A ride another app syncs hours late (for example the Bosch app) still
-   exports.
+   exports, about 10 minutes after it appears in Health, with its full
+   route.
 5. The first launch after installing takes a baseline and exports nothing.
+6. Exporting a ride manually within 10 minutes of finishing says it will be
+   re-exported once the route is complete, and background export later
+   overwrites the file.
