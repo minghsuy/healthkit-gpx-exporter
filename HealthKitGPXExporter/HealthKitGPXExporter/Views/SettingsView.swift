@@ -3,6 +3,7 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject var viewModel: WorkoutViewModel
     private let fileExporter = FileExporter()
+    @State private var anchorUnreadable = false
 
     private var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "?"
@@ -34,6 +35,20 @@ struct SettingsView: View {
                 Text(BackgroundSyncManager.shared.lastResult ?? "No background sync yet.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+
+                if anchorUnreadable {
+                    Text("The saved sync position can't be read, so background sync is paused. Restarting keeps your export history and takes a new starting point. Rides added while paused are not exported automatically; use Export All New, or Export Selected for rides from before your last v1 export.")
+                        .font(.caption)
+                        .foregroundStyle(.red)
+                    Button("Restart Background Sync") {
+                        BackgroundSyncManager.restartSyncIfAnchorUnreadable()
+                        anchorUnreadable = BackgroundSyncManager.storedAnchorState() == .unreadable
+                        // Take the new starting point now rather than at the
+                        // next wake, so fewer rides fall before it. Skipped
+                        // while the export record is unreadable.
+                        Task { await BackgroundSyncManager.shared.sync() }
+                    }
+                }
 
                 if let loadError = ExportedWorkoutStore.shared.loadError {
                     Text(loadError)
@@ -92,5 +107,8 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Settings")
+        .onAppear {
+            anchorUnreadable = BackgroundSyncManager.storedAnchorState() == .unreadable
+        }
     }
 }

@@ -159,6 +159,19 @@ final class ExportedWorkoutStore {
         save()
     }
 
+    /// Retries a read that failed at launch (for example before first
+    /// unlock) and merges what this process recorded meanwhile. Call before
+    /// trusting `ledger` for selection. Returns whether the record is
+    /// readable, so false means `ledger` is not the real history.
+    @discardableResult
+    func reloadIfUnreadable() -> Bool {
+        guard loadError != nil else { return true }
+        guard let fileURL, let stored = try? Self.read(fileURL) else { return false }
+        ledger = ledger.merging(stored)
+        loadError = nil
+        return true
+    }
+
     private static func read(_ fileURL: URL) throws -> ExportLedger {
         try JSONDecoder().decode(ExportLedger.self, from: Data(contentsOf: fileURL))
     }
@@ -168,16 +181,10 @@ final class ExportedWorkoutStore {
         guard let fileURL else { return true }
         // Cleared only by a write that succeeds below.
         hasUnsavedChanges = true
-        if loadError != nil {
-            // The read may have failed transiently (for example a launch
-            // before first unlock). If the file reads now, merge it in and
-            // carry on; otherwise keep refusing to overwrite it.
-            guard let stored = try? Self.read(fileURL) else {
-                lastSaveError = "Export history not saved: the existing file could not be read"
-                return false
-            }
-            ledger = ledger.merging(stored)
-            loadError = nil
+        // If the file still cannot be read, keep refusing to overwrite it.
+        guard reloadIfUnreadable() else {
+            lastSaveError = "Export history not saved: the existing file could not be read"
+            return false
         }
         do {
             try FileManager.default.createDirectory(

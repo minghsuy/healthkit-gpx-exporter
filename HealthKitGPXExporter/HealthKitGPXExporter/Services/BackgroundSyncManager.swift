@@ -102,12 +102,163 @@ enum AnchorCommit {
     /// The anchor says "everything before here is handled". That is only
     /// true once the export record holding those workouts is on disk; if the
     /// app died with the record unsaved, an advanced anchor would lose them.
-    /// `heldWorkouts` counts workouts this pass deliberately left undone
-    /// (route still settling, iCloud Drive unavailable, local-only write):
-    /// while any are held the anchor stays, so the anchored query keeps
-    /// returning them even after the retry list's window expires.
-    static func decision(ledgerWritesSucceeded: Bool, heldWorkouts: Int = 0, generationCurrent: Bool) -> Decision {
-        ledgerWritesSucceeded && heldWorkouts == 0 && generationCurrent ? .save : .keep
+    /// `heldWorkouts` counts workouts *the anchored query returned this pass*
+    /// that the pass deliberately left undone (route still settling, iCloud
+    /// Drive unavailable, local-only write): while any are held the anchor
+    /// stays, so the query keeps returning them even after the retry list's
+    /// window expires. Retry-list workouts are not counted: the anchor is
+    /// already past them, so holding it cannot help them, and the retry list
+    /// carries them (SyncAdmission.heldFromQuery).
+    ///
+    /// A baseline pass (no stored anchor) always saves: its query selects
+    /// nothing, so everything it held or failed to record came from the
+    /// retry list, which keeps it. Holding a missing anchor would make every
+    /// later wake another baseline, and rides added meanwhile would be
+    /// fetched, never selected, then passed over for good.
+    static func decision(
+        baseline: Bool = false,
+        ledgerWritesSucceeded: Bool,
+        heldWorkouts: Int = 0,
+        generationCurrent: Bool
+    ) -> Decision {
+        guard generationCurrent else { return .keep }
+        if baseline {
+            return .save
+        }
+        return ledgerWritesSucceeded && heldWorkouts == 0 ? .save : .keep
+    }
+}
+
+/// What the stored sync anchor is, without needing a real HKQueryAnchor:
+/// `decode` is injected, so tests never build HealthKit objects.
+enum StoredAnchorState: Equatable {
+    /// Never saved (first run, or after Reset): the next pass is a baseline.
+    case missing
+    case readable
+    /// Saved but undecodable. Every pass stops until it is cleared.
+    case unreadable
+
+    static func classify<T>(_ data: Data?, decode: (Data) throws -> T?) -> StoredAnchorState {
+        guard let data else { return .missing }
+        return (try? decode(data)) == nil ? .unreadable : .readable
+    }
+}
+
+/// Whether a background pass may run at all. Plain Swift so the rule is
+/// unit-testable. Both skips write nothing (ledger, retry list, anchor), so
+/// the next pass after recovery sees the same workouts: none is lost, and
+/// none is exported against a record that cannot say what was exported.
+enum SyncPreflight {
+    enum Decision: Equatable {
+        case run
+        /// Never re-baseline silently: that would skip every workout added
+        /// since the last good anchor.
+        case skipUnreadableAnchor
+        /// With the record unreadable the in-memory ledger is empty, so the
+        /// re-delivered range (and the retry list) would include workouts
+        /// the file already holds as exported, and export them again.
+        case skipUnreadableLedger
+    }
+
+    static func decision(anchor: StoredAnchorState, ledgerReadable: Bool) -> Decision {
+        if anchor == .unreadable {
+            return .skipUnreadableAnchor
+        }
+        return ledgerReadable ? .run : .skipUnreadableLedger
+    }
+
+    static func skipMessage(_ decision: Decision, anchorError: String?) -> String? {
+        switch decision {
+        case .run:
+            return nil
+        case .skipUnreadableAnchor:
+            let reason = anchorError.map { " (\($0))" } ?? ""
+            return "Sync paused: the saved sync position could not be read\(reason). "
+                + "Restart Background Sync in Settings; workouts added meanwhile are not exported "
+                + "automatically, use Export All New"
+        case .skipUnreadableLedger:
+            return "Sync paused: export history could not be read, so nothing was exported. "
+                + "It resumes once the file reads again, or after Reset Export History"
+        }
+    }
+}
+
+/// The admission/merge step of a background pass: which workouts it tries to
+/// export and which start on the retry list. Plain Swift over UUIDs so the
+/// wiring of the retry list's first-seen dates is unit-testable.
+enum SyncAdmission {
+    struct Plan: Equatable {
+        /// To try in order; the route-settle check and the export follow.
+        var attempt: [UUID]
+        /// The retry list before the export loop adds to it.
+        var retry: [UUID: Date]
+        /// Set when iCloud Drive is off: how many candidates wait for it.
+        var waitingForICloud: Int?
+        /// The candidates the iCloud gate held, for heldFromQuery.
+        var heldForICloud: [UUID] = []
+    }
+
+    /// How many held workouts the anchored query returned this pass; only
+    /// those may hold the anchor (AnchorCommit).
+    static func heldFromQuery(held: [UUID], selected: Set<UUID>) -> Int {
+        held.filter { selected.contains($0) }.count
+    }
+
+    /// Retry-list workouts to look up in HealthKit. Ones the anchored query
+    /// returned this pass are already candidates.
+    static func retryLookups(previousRetry: [UUID: Date], selected: Set<UUID>) -> [UUID] {
+        previousRetry.keys.filter { !selected.contains($0) }
+    }
+
+    /// Puts `uuid` on the retry list with its first-seen date, unless its
+    /// window has expired.
+    static func admit(_ uuid: UUID, into retry: inout [UUID: Date], previousRetry: [UUID: Date], now: Date) {
+        if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[uuid], now: now) {
+            retry[uuid] = firstSeen
+        }
+    }
+
+    /// `selected`: anchored-query workouts chosen by `newForBackgroundExport`.
+    /// `retryFound` / `retryUnresolved`: retry-list lookups that returned a
+    /// workout / failed. A listed workout in neither was deleted and drops.
+    static func plan(
+        selected: [UUID],
+        retryFound: [UUID],
+        retryUnresolved: [UUID],
+        previousRetry: [UUID: Date],
+        ledger: ExportLedger,
+        ledgerUnsaved: Bool,
+        iCloudAvailable: Bool,
+        now: Date
+    ) -> Plan {
+        // `selected` was chosen before the retry lookups awaited; a manual
+        // export may have recorded one of them since.
+        var attempt = (selected + retryFound).filter { !ledger.contains($0) }
+        var retry: [UUID: Date] = [:]
+        // A lookup that failed is not a deletion: keep it for the next wake.
+        for uuid in retryUnresolved {
+            admit(uuid, into: &retry, previousRetry: previousRetry, now: now)
+        }
+        // Retry-list workouts the in-memory record already holds are not
+        // attempted; while that record is unsaved they stay listed, because
+        // the anchor is already past them and a relaunch would lose them.
+        if ledgerUnsaved {
+            for uuid in retryFound where ledger.contains(uuid) {
+                admit(uuid, into: &retry, previousRetry: previousRetry, now: now)
+            }
+        }
+        var waitingForICloud: Int?
+        var heldForICloud: [UUID] = []
+        // With iCloud Drive off, write nothing this pass.
+        if ICloudGate.plan(iCloudAvailable: iCloudAvailable) == .waitForICloud {
+            for uuid in attempt {
+                admit(uuid, into: &retry, previousRetry: previousRetry, now: now)
+            }
+            waitingForICloud = attempt.count
+            heldForICloud = attempt
+            attempt = []
+        }
+        return Plan(attempt: attempt, retry: retry, waitingForICloud: waitingForICloud, heldForICloud: heldForICloud)
     }
 }
 
@@ -124,12 +275,22 @@ enum SyncSummary {
         ledgerSaveFailed: Bool = false,
         localOnly: Int = 0,
         settleWaits: Int = 0,
-        waitingForICloud: Int? = nil
+        waitingForICloud: Int? = nil,
+        anchorSaved: Bool = true
     ) -> String {
         var summary: String
         if baseline {
-            // A baseline pass exports nothing, so iCloud does not matter.
-            summary = "Baseline taken; \(checked) existing workout(s) left for Export All New"
+            // The query part of a baseline exports nothing; only retry-list
+            // workouts can export, wait for iCloud or stay listed.
+            summary = anchorSaved
+                ? "Baseline taken; \(checked) existing workout(s) left for Export All New"
+                : "No starting point saved yet; \(checked) existing workout(s) left for Export All New"
+            if exported > 0 || toRetry > 0 {
+                summary += "; from the retry list: exported \(exported), \(toRetry) to retry"
+            }
+            if let waitingForICloud, waitingForICloud > 0 {
+                summary += "; iCloud Drive unavailable; \(waitingForICloud) waiting"
+            }
         } else if let waitingForICloud {
             summary = "iCloud Drive unavailable; \(waitingForICloud) waiting"
         } else {
@@ -264,12 +425,24 @@ final class BackgroundSyncManager {
         // Every commit below checks this token first.
         let token = Self.generation.value
         let storedAnchor: HKQueryAnchor?
+        let anchorState: StoredAnchorState
+        var anchorError: String?
         do {
             storedAnchor = try loadAnchor()
+            anchorState = storedAnchor == nil ? .missing : .readable
         } catch {
-            // Never re-baseline silently: that would skip every workout added
-            // since the last good anchor. Keep the stored anchor untouched.
-            record("Sync skipped: the saved sync anchor could not be read (\(error.localizedDescription))")
+            storedAnchor = nil
+            anchorState = .unreadable
+            anchorError = error.localizedDescription
+        }
+        // Also the retry for a record that failed to read at launch (say,
+        // before first unlock). No await before this, so no reset check.
+        let preflight = SyncPreflight.decision(
+            anchor: anchorState,
+            ledgerReadable: exportedStore.reloadIfUnreadable()
+        )
+        if let message = SyncPreflight.skipMessage(preflight, anchorError: anchorError) {
+            record(message)
             return
         }
         let result: (workouts: [HKWorkout], deleted: [UUID], anchor: HKQueryAnchor?)
@@ -291,50 +464,38 @@ final class BackgroundSyncManager {
         var ledgerWritesSucceeded = exportedStore.removeDeleted(result.deleted)
 
         let added = result.workouts.map { WorkoutCandidate(uuid: $0.uuid, startDate: $0.startDate) }
-        let selected = Set(
-            exportedStore.ledger
-                .newForBackgroundExport(added: added, hasStoredAnchor: storedAnchor != nil)
-                .map(\.uuid)
-        )
-        var candidates = result.workouts.filter { selected.contains($0.uuid) }
+        let selected = exportedStore.ledger
+            .newForBackgroundExport(added: added, hasStoredAnchor: storedAnchor != nil)
+            .map(\.uuid)
         let previousRetry = loadRetryList()
-        let retryLookup = await loadRetryWorkouts(previousRetry.keys.filter { !selected.contains($0) })
-        candidates.append(contentsOf: retryLookup.workouts.filter { !exportedStore.ledger.contains($0.uuid) })
+        let retryLookup = await loadRetryWorkouts(
+            SyncAdmission.retryLookups(previousRetry: previousRetry, selected: Set(selected))
+        )
 
         let now = Date()
-        var retry: [UUID: Date] = [:]
-        // A lookup that failed is not a deletion: keep it for the next wake.
-        for uuid in retryLookup.unresolved {
-            if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[uuid], now: now) {
-                retry[uuid] = firstSeen
-            }
-        }
-        // Retry-list workouts the in-memory record already holds are skipped
-        // below; while that record is unsaved they stay listed, because the
-        // anchor is already past them and a relaunch would lose them.
-        if exportedStore.hasUnsavedChanges {
-            for workout in retryLookup.workouts where exportedStore.ledger.contains(workout.uuid) {
-                if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
-                    retry[workout.uuid] = firstSeen
-                }
-            }
-        }
+        let plan = SyncAdmission.plan(
+            selected: selected,
+            retryFound: retryLookup.workouts.map(\.uuid),
+            retryUnresolved: retryLookup.unresolved,
+            previousRetry: previousRetry,
+            ledger: exportedStore.ledger,
+            ledgerUnsaved: exportedStore.hasUnsavedChanges,
+            iCloudAvailable: fileExporter.isICloudAvailable,
+            now: now
+        )
+        let byID = Dictionary(
+            (result.workouts + retryLookup.workouts).map { ($0.uuid, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let candidates = plan.attempt.compactMap { byID[$0] }
+        var retry = plan.retry
+        let waitingForICloud = plan.waitingForICloud
+        // Left undone on purpose; only the query's own may hold the anchor.
+        var held = plan.heldForICloud
         var exported = 0
         var localOnly = 0
         var settleWaits = 0
-        var waitingForICloud: Int?
         var lastError: String?
-        // Checked once: with iCloud Drive off, write nothing this pass.
-        if ICloudGate.plan(iCloudAvailable: fileExporter.isICloudAvailable) == .waitForICloud {
-            let waiting = candidates.filter { !exportedStore.ledger.contains($0.uuid) }
-            for workout in waiting {
-                if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
-                    retry[workout.uuid] = firstSeen
-                }
-            }
-            waitingForICloud = waiting.count
-            candidates = []
-        }
         for workout in candidates {
             // A manual export may have run while this loop awaited.
             if exportedStore.ledger.contains(workout.uuid) {
@@ -346,9 +507,8 @@ final class BackgroundSyncManager {
             let firstSeen = previousRetry[workout.uuid] ?? now
             if RouteSettle.eligibility(endDate: workout.endDate, firstSeen: firstSeen, now: now) == .wait {
                 settleWaits += 1
-                if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
-                    retry[workout.uuid] = firstSeen
-                }
+                held.append(workout.uuid)
+                SyncAdmission.admit(workout.uuid, into: &retry, previousRetry: previousRetry, now: now)
                 continue
             }
             let file: ExportResult?
@@ -365,11 +525,10 @@ final class BackgroundSyncManager {
             }
             if let file, BackgroundExportDecision.action(for: file.destination) == .retry {
                 // Written to this device only. Not done: retry until iCloud
-                // Drive is back, and hold the anchor like a failed save.
+                // Drive is back; a query-returned one also holds the anchor.
                 localOnly += 1
-                if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
-                    retry[workout.uuid] = firstSeen
-                }
+                held.append(workout.uuid)
+                SyncAdmission.admit(workout.uuid, into: &retry, previousRetry: previousRetry, now: now)
             } else if file != nil {
                 exported += 1
                 if !exportedStore.markExported(WorkoutCandidate(uuid: workout.uuid, startDate: workout.startDate)) {
@@ -377,13 +536,11 @@ final class BackgroundSyncManager {
                     // list so a relaunch, which loses the in-memory record,
                     // still finishes it.
                     ledgerWritesSucceeded = false
-                    if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
-                        retry[workout.uuid] = firstSeen
-                    }
+                    SyncAdmission.admit(workout.uuid, into: &retry, previousRetry: previousRetry, now: now)
                 }
-            } else if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
+            } else {
                 // No route yet, or the export failed: try again next wake.
-                retry[workout.uuid] = firstSeen
+                SyncAdmission.admit(workout.uuid, into: &retry, previousRetry: previousRetry, now: now)
             }
         }
 
@@ -399,14 +556,17 @@ final class BackgroundSyncManager {
         ledgerWritesSucceeded = exportedStore.flush() && ledgerWritesSucceeded
         saveRetryList(retry)
         var anchorSaveError: String?
+        var anchorSaved = false
         let commit = AnchorCommit.decision(
+            baseline: storedAnchor == nil,
             ledgerWritesSucceeded: ledgerWritesSucceeded,
-            heldWorkouts: localOnly + settleWaits + (waitingForICloud ?? 0),
+            heldWorkouts: SyncAdmission.heldFromQuery(held: held, selected: Set(selected)),
             generationCurrent: Self.generation.isCurrent(token)
         )
         if commit == .save, let anchor = result.anchor {
             do {
                 try saveAnchor(anchor)
+                anchorSaved = true
             } catch {
                 anchorSaveError = error.localizedDescription
             }
@@ -427,7 +587,8 @@ final class BackgroundSyncManager {
             ledgerSaveFailed: !ledgerWritesSucceeded,
             localOnly: localOnly,
             settleWaits: settleWaits,
-            waitingForICloud: waitingForICloud
+            waitingForICloud: waitingForICloud,
+            anchorSaved: anchorSaved
         ))
     }
 
@@ -485,10 +646,40 @@ final class BackgroundSyncManager {
     /// that fails to decode throws instead of reading as "first run".
     private func loadAnchor() throws -> HKQueryAnchor? {
         guard let data = UserDefaults.standard.data(forKey: Self.anchorKey) else { return nil }
-        guard let anchor = try NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data) else {
+        guard let anchor = try Self.decodeAnchor(data) else {
             throw AnchorError.undecodable
         }
         return anchor
+    }
+
+    nonisolated static func decodeAnchor(_ data: Data) throws -> HKQueryAnchor? {
+        try NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data)
+    }
+
+    /// For Settings: whether the stored anchor blocks every pass.
+    static func storedAnchorState(
+        in defaults: UserDefaults = .standard,
+        decode: (Data) throws -> Any? = { try BackgroundSyncManager.decodeAnchor($0) }
+    ) -> StoredAnchorState {
+        StoredAnchorState.classify(defaults.data(forKey: anchorKey), decode: decode)
+    }
+
+    /// "Restart Background Sync": the narrow recovery from an unreadable
+    /// anchor. Clears only the anchor, and only while it fails to decode;
+    /// the export record and retry list stay, so nothing exported is offered
+    /// again. The next pass takes a fresh baseline; workouts added since the
+    /// last good anchor are not exported automatically but stay in Export
+    /// All New. The generation is not advanced: with the anchor unreadable,
+    /// every pass stops before its first commit, so none can be voided.
+    /// Returns whether the anchor was cleared.
+    @discardableResult
+    static func restartSyncIfAnchorUnreadable(
+        in defaults: UserDefaults = .standard,
+        decode: (Data) throws -> Any? = { try BackgroundSyncManager.decodeAnchor($0) }
+    ) -> Bool {
+        guard storedAnchorState(in: defaults, decode: decode) == .unreadable else { return false }
+        defaults.removeObject(forKey: anchorKey)
+        return true
     }
 
     private func saveAnchor(_ anchor: HKQueryAnchor) throws {

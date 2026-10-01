@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = WorkoutViewModel()
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         NavigationStack {
@@ -33,6 +34,12 @@ struct ContentView: View {
         }
         .task {
             await viewModel.requestAuthorization()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // sync() coalesces with a pass already running.
+            if phase == .active, viewModel.refreshExportHistory() {
+                Task { await BackgroundSyncManager.shared.sync() }
+            }
         }
         .alert("Error", isPresented: isShowingError) {
             Button("OK") { viewModel.errorMessage = nil }
