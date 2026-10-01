@@ -209,12 +209,18 @@ class WorkoutViewModel: ObservableObject {
         if !abandoned, !recordSaveFailed, exportedCount > 0 {
             lastExportDate = Date()
         }
+        // Both problems can happen in one run; report each, not just the first.
+        var problems: [String] = []
+        if savedLocally > 0 {
+            problems.append("iCloud Drive unavailable: \(savedLocally) saved on this iPhone only; they stay unexported.")
+        }
+        if recordSaveFailed {
+            problems.append("Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s"), but the export record could not be saved. They may be offered again after a restart.")
+        }
         if abandoned {
             errorMessage = "Export stopped: export history was reset."
-        } else if savedLocally > 0 {
-            errorMessage = "iCloud Drive unavailable: \(savedLocally) saved on this iPhone only; they stay in Export All New."
-        } else if recordSaveFailed {
-            errorMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s"), but the export record could not be saved. They may be offered again after a restart."
+        } else if !problems.isEmpty {
+            errorMessage = problems.joined(separator: " ")
         } else if exportedCount > 0 {
             successMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive."
         }
