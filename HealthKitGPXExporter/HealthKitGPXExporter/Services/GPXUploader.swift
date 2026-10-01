@@ -19,9 +19,55 @@ enum UploadSettings {
 }
 
 /// One queued upload. `rejections` counts client-error (4xx) answers only.
+/// `workoutID` and `location` are nil in entries queued before they existed;
+/// those fall back to the filename and the current export directory.
 struct PendingUpload: Codable, Equatable {
+    var workoutID: UUID?
     let filename: String
+    var location: ExportLocation?
     var rejections: Int = 0
+
+    init(workoutID: UUID? = nil, filename: String, location: ExportLocation? = nil, rejections: Int = 0) {
+        self.workoutID = workoutID
+        self.filename = filename
+        self.location = location
+        self.rejections = rejections
+    }
+
+    init(_ file: ExportedGPX) {
+        self.init(workoutID: file.workoutID, filename: file.filename, location: file.location)
+    }
+
+    /// One queue entry per workout; legacy entries are keyed by filename.
+    var queueKey: String {
+        workoutID?.uuidString ?? filename
+    }
+}
+
+/// Plain-Swift queue edits, unit-tested.
+enum UploadQueue {
+    /// Adds `item`, or, when its workout is already queued, points the entry
+    /// at the new file and keeps its rejection count.
+    static func enqueuing(_ item: PendingUpload, into queue: [PendingUpload]) -> [PendingUpload] {
+        var queue = queue
+        if let index = queue.firstIndex(where: { $0.queueKey == item.queueKey }) {
+            queue[index] = PendingUpload(
+                workoutID: item.workoutID,
+                filename: item.filename,
+                location: item.location,
+                rejections: queue[index].rejections
+            )
+        } else {
+            queue.append(item)
+        }
+        return queue
+    }
+
+    /// After a 2xx: a file that once hit the rejection limit and was
+    /// re-exported is no longer failed.
+    static func failedAfterSuccess(of item: PendingUpload, failed: [String]) -> [String] {
+        failed.filter { $0 != item.filename }
+    }
 }
 
 enum UploadOutcome: Equatable {
@@ -111,13 +157,9 @@ final class GPXUploader {
         UserDefaults.standard.bool(forKey: Self.authFailedKey)
     }
 
-    func enqueue(_ filename: String) {
+    func enqueue(_ file: ExportedGPX) {
         guard UploadSettings.isEnabled else { return }
-        var queue = pending
-        if !queue.contains(where: { $0.filename == filename }) {
-            queue.append(PendingUpload(filename: filename))
-            save(queue)
-        }
+        save(UploadQueue.enqueuing(PendingUpload(file), into: pending))
     }
 
     /// Runs one upload pass under a UIKit background task, so it can finish
@@ -157,7 +199,7 @@ final class GPXUploader {
             }
             let outcome: UploadOutcome
             do {
-                outcome = try await upload(item.filename, timeout: min(Self.requestTimeout, remaining))
+                outcome = try await upload(item, timeout: min(Self.requestTimeout, remaining))
             } catch GPXUploadError.fileMissing {
                 update(item, with: nil)
                 record("Dropped \(item.filename): file no longer exists")
@@ -174,10 +216,16 @@ final class GPXUploader {
             switch decision {
             case .done:
                 update(item, with: nil)
+                UserDefaults.standard.set(
+                    UploadQueue.failedAfterSuccess(of: item, failed: failedFilenames),
+                    forKey: Self.failedKey
+                )
                 UserDefaults.standard.set(false, forKey: Self.authFailedKey)
                 record("Uploaded \(item.filename)")
             case .retry(let rejections):
-                update(item, with: PendingUpload(filename: item.filename, rejections: rejections))
+                var retried = item
+                retried.rejections = rejections
+                update(item, with: retried)
                 record("Upload of \(item.filename) will retry: \(describe(outcome))")
             case .giveUp:
                 update(item, with: nil)
@@ -197,8 +245,17 @@ final class GPXUploader {
         }
     }
 
-    private func upload(_ filename: String, timeout: TimeInterval) async throws -> UploadOutcome {
-        let fileURL = try fileExporter.getExportDirectory().appendingPathComponent(filename)
+    private func upload(_ item: PendingUpload, timeout: TimeInterval) async throws -> UploadOutcome {
+        // Resolve against the directory the file was written to; only legacy
+        // entries without a location use whichever directory is current.
+        let directory: URL
+        if let location = item.location {
+            directory = try fileExporter.getExportDirectory(for: location)
+        } else {
+            directory = try fileExporter.getExportDirectory()
+        }
+        let filename = item.filename
+        let fileURL = directory.appendingPathComponent(filename)
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             throw GPXUploadError.fileMissing
         }
@@ -234,7 +291,7 @@ final class GPXUploader {
     /// is nil. Re-reads the queue so an enqueue during the upload survives.
     private func update(_ item: PendingUpload, with replacement: PendingUpload?) {
         var queue = pending
-        guard let index = queue.firstIndex(where: { $0.filename == item.filename }) else { return }
+        guard let index = queue.firstIndex(where: { $0.queueKey == item.queueKey }) else { return }
         if let replacement {
             queue[index] = replacement
         } else {

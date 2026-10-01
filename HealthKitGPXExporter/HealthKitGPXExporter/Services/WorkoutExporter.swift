@@ -13,9 +13,9 @@ struct WorkoutExporter {
         self.healthKitManager = healthKitManager
     }
 
-    /// Returns the exported filename, or nil when the workout has no route
+    /// Returns the exported file, or nil when the workout has no route
     /// (yet: HealthKit can save the route after the workout itself).
-    func export(_ workout: HKWorkout) async throws -> String? {
+    func export(_ workout: HKWorkout) async throws -> ExportedGPX? {
         let locations = try await healthKitManager.fetchRoute(for: workout)
         if locations.isEmpty {
             return nil
@@ -29,8 +29,8 @@ struct WorkoutExporter {
             metadata: healthKitManager.metadata(for: workout)
         )
 
-        let filename = fileExporter.generateFilename(for: workout.startDate)
-        try fileExporter.writeToICloud(gpxString: gpxString, filename: filename)
-        return filename
+        let filename = fileExporter.generateFilename(for: workout.startDate, workoutID: workout.uuid)
+        let location = try fileExporter.writeToICloud(gpxString: gpxString, filename: filename)
+        return ExportedGPX(workoutID: workout.uuid, filename: filename, location: location)
     }
 }

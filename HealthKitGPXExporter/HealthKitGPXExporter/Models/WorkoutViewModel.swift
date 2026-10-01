@@ -142,7 +142,7 @@ class WorkoutViewModel: ObservableObject {
                 continue
             }
             do {
-                guard let filename = try await workoutExporter.export(cyclingWorkout.workout) else {
+                guard let file = try await workoutExporter.export(cyclingWorkout.workout) else {
                     exportProgress.current += 1
                     continue
                 }
@@ -150,7 +150,7 @@ class WorkoutViewModel: ObservableObject {
                 exportedStore.markExported(
                     WorkoutCandidate(uuid: cyclingWorkout.id, startDate: cyclingWorkout.date)
                 )
-                GPXUploader.shared.enqueue(filename)
+                GPXUploader.shared.enqueue(file)
                 exportedCount += 1
                 exportProgress.current += 1
 

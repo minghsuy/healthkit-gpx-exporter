@@ -163,18 +163,18 @@ final class BackgroundSyncManager {
             if exportedStore.ledger.contains(workout.uuid) {
                 continue
             }
-            let filename: String?
+            let file: ExportedGPX?
             do {
-                filename = try await workoutExporter.export(workout)
+                file = try await workoutExporter.export(workout)
             } catch {
-                filename = nil
+                file = nil
                 lastError = error.localizedDescription
             }
 
-            if let filename {
+            if let file {
                 exported += 1
                 exportedStore.markExported(WorkoutCandidate(uuid: workout.uuid, startDate: workout.startDate))
-                GPXUploader.shared.enqueue(filename)
+                GPXUploader.shared.enqueue(file)
             } else if let firstSeen = RetryAdmission.firstSeen(previous: previousRetry[workout.uuid], now: now) {
                 // No route yet, or the export failed: try again next wake.
                 retry[workout.uuid] = firstSeen

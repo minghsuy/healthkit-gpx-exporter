@@ -32,6 +32,9 @@ when iCloud Drive is off. The app has no third-party dependencies.
   workout is exported again, so a server may use it to spot re-exports. The
   same ride recorded by two apps (say a watch and a bike app) has two UUIDs;
   matching those is the server's job, by overlapping time, not by UUID.
+  v2 files are named `workout_yyyy-MM-dd_HHmmss_<first 8 of the workout
+  UUID>.gpx`, so two workouts that start in the same second no longer
+  overwrite each other; v1 files keep their names.
   The `creator` attribute is now `HealthKitGPXExporter/2.0`; match on the
   `HealthKitGPXExporter` prefix.
 - **Automatic export.** HealthKit background delivery wakes the app when a
