@@ -162,10 +162,12 @@ the App Store Connect API key alone, and App Store Connect processed it:
 - `-exportArchive` with `destination` upload authenticates the upload with
   the API key; no Apple ID is signed in to Xcode.
 - The upload passes App Store Connect validation once the app icon exists
-  (#16). The iCloud container already existed on the App ID before the
-  first archive.
+  (#16).
 
 Still unverified:
+
+- Whether the iCloud container must exist on the App ID before the first
+  archive. This run cannot tell: the container already existed (step 3).
 
 - Whether `-allowProvisioningUpdates` creates a new Apple Development
   certificate on each fresh runner. If Certificates starts filling with
