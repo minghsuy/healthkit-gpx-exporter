@@ -52,6 +52,82 @@ class HealthKitManager {
         }
     }
 
+    /// Cycling workouts added to and deleted from HealthKit since `anchor`,
+    /// plus the anchor to persist for the next call. A nil anchor returns
+    /// every cycling workout.
+    func fetchCyclingWorkouts(
+        since anchor: HKQueryAnchor?
+    ) async throws -> (workouts: [HKWorkout], deleted: [UUID], anchor: HKQueryAnchor?) {
+        let cyclingPredicate = HKQuery.predicateForWorkouts(with: .cycling)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let query = HKAnchoredObjectQuery(
+                type: HKObjectType.workoutType(),
+                predicate: cyclingPredicate,
+                anchor: anchor,
+                limit: HKObjectQueryNoLimit
+            ) { _, samples, deletedObjects, newAnchor, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                let workouts = (samples as? [HKWorkout]) ?? []
+                let deleted = (deletedObjects ?? []).map(\.uuid)
+                continuation.resume(returning: (workouts, deleted, newAnchor))
+            }
+            healthStore.execute(query)
+        }
+    }
+
+    func fetchWorkout(uuid: UUID) async throws -> HKWorkout? {
+        let predicate = HKQuery.predicateForObject(with: uuid)
+
+        return try await withCheckedThrowingContinuation { continuation in
+            let query = HKSampleQuery(
+                sampleType: HKObjectType.workoutType(),
+                predicate: predicate,
+                limit: 1,
+                sortDescriptors: nil
+            ) { _, samples, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+                continuation.resume(returning: (samples as? [HKWorkout])?.first)
+            }
+            healthStore.execute(query)
+        }
+    }
+
+    /// Starts a long-running observer. HealthKit calls `onUpdate` on a
+    /// background queue; the handler must eventually call the completion it
+    /// receives, or HealthKit backs off and, after three misses, stops
+    /// background delivery.
+    func observe(
+        _ sampleType: HKSampleType,
+        predicate: NSPredicate?,
+        onUpdate: @escaping @Sendable (_ completion: @escaping HKObserverQueryCompletionHandler) -> Void
+    ) -> HKObserverQuery {
+        let query = HKObserverQuery(
+            sampleType: sampleType,
+            predicate: predicate
+        ) { _, completionHandler, error in
+            if error != nil {
+                completionHandler()
+                return
+            }
+            onUpdate(completionHandler)
+        }
+        healthStore.execute(query)
+        return query
+    }
+
+    /// Needs the com.apple.developer.healthkit.background-delivery
+    /// entitlement; without it this fails with errorAuthorizationDenied.
+    func enableBackgroundDelivery(for type: HKObjectType) async throws {
+        try await healthStore.enableBackgroundDelivery(for: type, frequency: .immediate)
+    }
+
     /// Plain-value metadata for the GPX: the workout UUID, the recording app
     /// and, on iOS 27, time in heart-rate and power zones.
     func metadata(for workout: HKWorkout) -> GPXWorkoutMetadata {
@@ -97,15 +173,16 @@ class HealthKitManager {
     #endif
 
     func fetchRoute(for workout: HKWorkout) async throws -> [CLLocation] {
+        // A workout can carry several route samples (for example after a
+        // GPS gap or a pause); all of them form the track.
         let routes = try await fetchWorkoutRoutes(for: workout)
-        var allLocations: [CLLocation] = []
+        var segments: [[CLLocation]] = []
 
         for route in routes {
-            let locations = try await fetchLocations(for: route)
-            allLocations.append(contentsOf: locations)
+            segments.append(try await fetchLocations(for: route))
         }
 
-        return allLocations.sorted { $0.timestamp < $1.timestamp }
+        return RouteAssembly.concatenated(segments, timestamp: \.timestamp)
     }
 
     private func fetchWorkoutRoutes(for workout: HKWorkout) async throws -> [HKWorkoutRoute] {

@@ -2,15 +2,16 @@ import Foundation
 import Combine
 import HealthKit
 
+/// A row in the list. Plain values only: the HKWorkout stays in the view
+/// model, and "exported" is derived from the export record, never cached
+/// here, so a background export shows up without a refresh.
 struct CyclingWorkout: Identifiable {
     let id: UUID
-    let workout: HKWorkout
     let date: Date
     let distance: Double // meters
     let duration: TimeInterval
     let averageHeartRate: Int?
     var isSelected: Bool = false
-    var isExported: Bool = false
 
     var formattedDate: String {
         date.formatted(date: .abbreviated, time: .shortened)
@@ -39,12 +40,20 @@ class WorkoutViewModel: ObservableObject {
     @Published var successMessage: String?
     @Published var healthKitAuthorized = false
 
+    // Display only ("Last Export" in Settings). Which workouts are new is
+    // decided by ExportedWorkoutStore, by UUID.
     private static let lastExportDateKey = "lastExportDate"
 
     private let healthKitManager = HealthKitManager()
-    private let heartRateMatcher = HeartRateMatcher()
-    private let gpxSerializer = GPXSerializer()
-    private let fileExporter = FileExporter()
+    private lazy var workoutExporter = WorkoutExporter(healthKitManager: healthKitManager)
+    // Observable: views reading isExported(_:) or newWorkoutCount re-render
+    // when any path, including background sync, changes the record.
+    private let exportedStore: ExportedWorkoutStore
+    private var healthKitWorkouts: [UUID: HKWorkout] = [:]
+
+    init(exportedStore: ExportedWorkoutStore = .shared) {
+        self.exportedStore = exportedStore
+    }
 
     var lastExportDate: Date? {
         get { UserDefaults.standard.object(forKey: Self.lastExportDateKey) as? Date }
@@ -55,8 +64,23 @@ class WorkoutViewModel: ObservableObject {
     }
 
     var newWorkoutCount: Int {
-        guard let lastExport = lastExportDate else { return workouts.count }
-        return workouts.filter { $0.date > lastExport }.count
+        newWorkouts.count
+    }
+
+    /// While the export record is unreadable every workout would look new,
+    /// so "Export All New" is disabled until it reads again or is reset.
+    var exportHistoryUnavailable: Bool {
+        exportedStore.loadError != nil
+    }
+
+    func isExported(_ workout: CyclingWorkout) -> Bool {
+        exportedStore.ledger.contains(workout.id)
+    }
+
+    private var newWorkouts: [CyclingWorkout] {
+        let candidates = workouts.map { WorkoutCandidate(uuid: $0.id, startDate: $0.date) }
+        let newIDs = Set(exportedStore.ledger.newForManualExport(candidates).map(\.uuid))
+        return workouts.filter { newIDs.contains($0.id) }
     }
 
     var selectedCount: Int {
@@ -68,6 +92,10 @@ class WorkoutViewModel: ObservableObject {
             try await healthKitManager.requestAuthorization()
             healthKitAuthorized = true
             await fetchWorkouts()
+            // The observer needs authorization to deliver; start() is
+            // idempotent.
+            BackgroundSyncManager.shared.start()
+            await BackgroundSyncManager.shared.sync()
         } catch {
             errorMessage = "HealthKit access required. Please enable in Settings."
         }
@@ -80,14 +108,15 @@ class WorkoutViewModel: ObservableObject {
         do {
             let hkWorkouts = try await healthKitManager.fetchCyclingWorkouts()
             var cyclingWorkouts: [CyclingWorkout] = []
+            var byID: [UUID: HKWorkout] = [:]
 
             for workout in hkWorkouts {
                 let avgHR = try? await healthKitManager.fetchAverageHeartRate(for: workout)
                 let distance = workout.totalDistance?.doubleValue(for: .meter()) ?? 0
 
+                byID[workout.uuid] = workout
                 cyclingWorkouts.append(CyclingWorkout(
                     id: workout.uuid,
-                    workout: workout,
                     date: workout.startDate,
                     distance: distance,
                     duration: workout.duration,
@@ -95,6 +124,7 @@ class WorkoutViewModel: ObservableObject {
                 ))
             }
 
+            healthKitWorkouts = byID
             workouts = cyclingWorkouts
         } catch {
             errorMessage = "Failed to fetch workouts: \(error.localizedDescription)"
@@ -108,54 +138,114 @@ class WorkoutViewModel: ObservableObject {
     }
 
     func exportAllNew() async {
-        let newWorkouts = workouts.filter { workout in
-            guard let lastExport = lastExportDate else { return true }
-            return workout.date > lastExport
-        }
-        guard !newWorkouts.isEmpty else { return }
-        await exportWorkouts(newWorkouts)
+        guard !exportHistoryUnavailable else { return }
+        let toExport = newWorkouts
+        guard !toExport.isEmpty else { return }
+        await exportWorkouts(toExport, skippingExported: true)
     }
 
-    private func exportWorkouts(_ workoutsToExport: [CyclingWorkout]) async {
+    /// `skippingExported` re-checks the export record before each workout,
+    /// because a background sync can export one while this loop awaits.
+    /// "Export Selected" passes false: re-exporting a chosen workout is the
+    /// user's call.
+    private func exportWorkouts(_ workoutsToExport: [CyclingWorkout], skippingExported: Bool = false) async {
         isExporting = true
         exportProgress = (0, workoutsToExport.count)
         var exportedCount = 0
+        // A Reset during this loop must not be undone by its later marks.
+        let token = BackgroundSyncManager.generation.value
+        var abandoned = false
+        var recordSaveFailed = false
+        var savedLocally = 0
+        var notSettled = 0
 
         for cyclingWorkout in workoutsToExport {
+            if skippingExported, exportedStore.ledger.contains(cyclingWorkout.id) {
+                exportProgress.current += 1
+                continue
+            }
+            guard let workout = healthKitWorkouts[cyclingWorkout.id] else {
+                exportProgress.current += 1
+                continue
+            }
             do {
-                let locations = try await healthKitManager.fetchRoute(for: cyclingWorkout.workout)
-
-                if locations.isEmpty {
+                guard let file = try await workoutExporter.export(workout) else {
                     exportProgress.current += 1
                     continue
                 }
-
-                let hrSamples = try await healthKitManager.fetchHeartRateSamples(for: cyclingWorkout.workout)
-                let matchedData = heartRateMatcher.match(locations: locations, hrSamples: hrSamples)
-                let gpxString = gpxSerializer.serialize(
-                    workoutDate: cyclingWorkout.date,
-                    matchedData: matchedData,
-                    metadata: healthKitManager.metadata(for: cyclingWorkout.workout)
+                guard BackgroundSyncManager.generation.isCurrent(token) else {
+                    abandoned = true
+                    break
+                }
+                // Done means iCloud Drive and a settled route, as in
+                // background export. The local Documents folder is not
+                // visible to the user, and a just-finished ride may still be
+                // receiving route samples; neither is marked.
+                let settle = RouteSettle.eligibility(
+                    endDate: workout.endDate,
+                    firstSeen: BackgroundSyncManager.retryFirstSeen(workout.uuid),
+                    now: Date()
                 )
+                switch ManualExportRule.outcome(destination: file.destination, settle: settle) {
+                case .localOnly:
+                    savedLocally += 1
+                    exportProgress.current += 1
+                    continue
+                case .notSettled:
+                    notSettled += 1
+                    exportProgress.current += 1
+                    continue
+                case .markDone:
+                    break
+                }
 
-                let filename = fileExporter.generateFilename(for: cyclingWorkout.date, workoutID: cyclingWorkout.id)
-                try fileExporter.writeToICloud(gpxString: gpxString, filename: filename)
-
+                if !exportedStore.markExported(
+                    WorkoutCandidate(uuid: cyclingWorkout.id, startDate: cyclingWorkout.date)
+                ) {
+                    recordSaveFailed = true
+                }
                 exportedCount += 1
                 exportProgress.current += 1
 
                 if let index = workouts.firstIndex(where: { $0.id == cyclingWorkout.id }) {
-                    workouts[index].isExported = true
                     workouts[index].isSelected = false
                 }
             } catch {
                 errorMessage = "Failed to export workout: \(error.localizedDescription)"
             }
         }
+        // The in-loop check only follows a successful export; a Reset during
+        // a run of failed exports must still void the earlier marks.
+        abandoned = abandoned || !BackgroundSyncManager.generation.isCurrent(token)
 
-        if exportedCount > 0 {
+        // "Last Export" doubles as the v1 cutoff when the record file is
+        // absent at launch, so it moves only when every mark reached disk.
+        if !abandoned, !recordSaveFailed, exportedCount > 0 {
             lastExportDate = Date()
-            successMessage = "Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive."
+        }
+        // Both problems can happen in one run; report each, not just the first.
+        var problems: [String] = []
+        if savedLocally > 0 {
+            problems.append("iCloud Drive unavailable: \(savedLocally) saved on this iPhone only; they stay unexported.")
+        }
+        if recordSaveFailed {
+            problems.append("Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s"), but the export record could not be saved. They may be offered again after a restart.")
+        }
+        // Not a problem, but the user should know these are not final.
+        var notes: [String] = []
+        if notSettled > 0 {
+            notes.append("\(notSettled) just-finished ride\(notSettled == 1 ? "" : "s") exported; \(notSettled == 1 ? "it stays" : "they stay") in Export All New until the route is complete.")
+        }
+        if abandoned {
+            errorMessage = "Export stopped: export history was reset."
+        } else if !problems.isEmpty {
+            errorMessage = (problems + notes).joined(separator: " ")
+        } else if exportedCount > 0 || !notes.isEmpty {
+            var lines: [String] = []
+            if exportedCount > 0 {
+                lines.append("Exported \(exportedCount) workout\(exportedCount == 1 ? "" : "s") to iCloud Drive.")
+            }
+            successMessage = (lines + notes).joined(separator: " ")
         }
 
         isExporting = false
@@ -169,8 +259,7 @@ class WorkoutViewModel: ObservableObject {
 
     func resetLastExportDate() {
         UserDefaults.standard.removeObject(forKey: Self.lastExportDateKey)
-        for index in workouts.indices {
-            workouts[index].isExported = false
-        }
+        exportedStore.reset()
+        BackgroundSyncManager.resetSyncState()
     }
 }

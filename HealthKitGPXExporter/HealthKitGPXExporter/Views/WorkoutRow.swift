@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WorkoutRow: View {
     let workout: CyclingWorkout
+    let isExported: Bool
     let onToggle: () -> Void
 
     var body: some View {
@@ -18,7 +19,7 @@ struct WorkoutRow: View {
 
                         Spacer()
 
-                        if workout.isExported {
+                        if isExported {
                             Label("Exported", systemImage: "checkmark")
                                 .font(.caption)
                                 .foregroundStyle(.green)
@@ -42,6 +43,6 @@ struct WorkoutRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .opacity(workout.isExported && !workout.isSelected ? 0.6 : 1.0)
+        .opacity(isExported && !workout.isSelected ? 0.6 : 1.0)
     }
 }

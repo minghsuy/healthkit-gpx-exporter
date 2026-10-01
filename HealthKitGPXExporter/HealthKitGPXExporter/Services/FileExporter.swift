@@ -1,5 +1,14 @@
 import Foundation
 
+/// Where an export ended up. Only `.iCloud` counts as done, on every path:
+/// the app's local Documents folder is not visible to the user, so a local
+/// copy never reaches anyone on its own. A failed write throws instead.
+enum ExportDestination: Equatable {
+    case iCloud
+    /// iCloud Drive was unavailable; the file is in this device's Documents.
+    case localFallback
+}
+
 struct FileExporter {
     private let fileManager = FileManager.default
 
@@ -20,14 +29,21 @@ struct FileExporter {
     }
 
     func getExportDirectory() throws -> URL {
+        try exportDirectory().url
+    }
+
+    private func exportDirectory() throws -> (url: URL, destination: ExportDestination) {
         let baseDir: URL
+        let destination: ExportDestination
         if let iCloudURL = fileManager.url(forUbiquityContainerIdentifier: nil) {
             baseDir = iCloudURL.appendingPathComponent("Documents")
+            destination = .iCloud
         } else {
             guard let documentDirectory = fileManager.urls(for: .documentDirectory, in: .userDomainMask).first else {
                 throw FileExportError.directoryNotFound
             }
             baseDir = documentDirectory
+            destination = .localFallback
         }
 
         let exportDir = baseDir
@@ -38,11 +54,14 @@ struct FileExporter {
             try fileManager.createDirectory(at: exportDir, withIntermediateDirectories: true)
         }
 
-        return exportDir
+        return (exportDir, destination)
     }
 
-    func writeToICloud(gpxString: String, filename: String) throws {
-        let directory = try getExportDirectory()
+    /// Writes to iCloud Drive, or to local Documents when iCloud is
+    /// unavailable, and says which. Throws when nothing could be written.
+    @discardableResult
+    func writeToICloud(gpxString: String, filename: String) throws -> ExportDestination {
+        let (directory, destination) = try exportDirectory()
         let fileURL = directory.appendingPathComponent(filename)
 
         guard let data = gpxString.data(using: .utf8) else {
@@ -50,6 +69,7 @@ struct FileExporter {
         }
 
         try data.write(to: fileURL, options: .atomic)
+        return destination
     }
 
     var isICloudAvailable: Bool {

@@ -18,6 +18,7 @@ struct WorkoutListView: View {
                             .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
+                        .disabled(viewModel.exportHistoryUnavailable)
                         .listRowBackground(Color.clear)
                         .listRowInsets(EdgeInsets())
                     }
@@ -25,7 +26,7 @@ struct WorkoutListView: View {
 
                 Section {
                     ForEach(viewModel.workouts) { workout in
-                        WorkoutRow(workout: workout) {
+                        WorkoutRow(workout: workout, isExported: viewModel.isExported(workout)) {
                             viewModel.toggleSelection(for: workout)
                         }
                     }
