@@ -128,12 +128,22 @@ class HealthKitManager {
         try await healthStore.enableBackgroundDelivery(for: type, frequency: .immediate)
     }
 
-    /// Pause and resume events (manual and auto-pause); laps, markers and
-    /// segments are dropped. The serializer puts them in time order.
+    /// HealthKit event types the GPX keeps, keyed by the SDK's own raw
+    /// values: pause and resume, manual and auto-pause. Laps, markers,
+    /// segments and pause-or-resume requests are dropped.
+    static let keptEventTypes: [Int: GPXWorkoutEventType] = [
+        HKWorkoutEventType.pause.rawValue: .pause,
+        HKWorkoutEventType.resume.rawValue: .resume,
+        HKWorkoutEventType.motionPaused.rawValue: .motionPaused,
+        HKWorkoutEventType.motionResumed.rawValue: .motionResumed
+    ]
+
+    /// The serializer puts the result in time order.
     static func timingEvents(_ events: [HKWorkoutEvent]) -> [GPXWorkoutEvent] {
-        events.compactMap { event in
-            GPXWorkoutEventType(event.type).map { GPXWorkoutEvent(type: $0, time: event.dateInterval.start) }
-        }
+        GPXWorkoutEvent.kept(
+            events.map { (rawType: $0.type.rawValue, time: $0.dateInterval.start) },
+            types: keptEventTypes
+        )
     }
 
     /// Plain-value metadata for the GPX: the workout UUID, its start, end,
@@ -316,24 +326,6 @@ enum HealthKitError: LocalizedError {
         switch self {
         case .notAvailable:
             return "HealthKit is not available on this device."
-        }
-    }
-}
-
-extension GPXWorkoutEventType {
-    /// nil for event types that do not mark moving or stopped.
-    init?(_ type: HKWorkoutEventType) {
-        switch type {
-        case .pause:
-            self = .pause
-        case .resume:
-            self = .resume
-        case .motionPaused:
-            self = .motionPaused
-        case .motionResumed:
-            self = .motionResumed
-        default:
-            return nil
         }
     }
 }

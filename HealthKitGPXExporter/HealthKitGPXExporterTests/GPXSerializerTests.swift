@@ -1,7 +1,6 @@
 import Testing
 import Foundation
 import CoreLocation
-import HealthKit
 @testable import HealthKitGPXExporter
 
 /// The app target defaults to MainActor isolation, so its types are
@@ -145,21 +144,26 @@ struct GPXSerializerTests {
     }
 
     @Test func onlyPauseAndResumeEventTypesAreKept() {
-        func event(_ type: HKWorkoutEventType, _ minutes: Double) -> HKWorkoutEvent {
-            HKWorkoutEvent(type: type, dateInterval: DateInterval(start: at(minutes: minutes), duration: 0), metadata: nil)
-        }
-        let events = [
-            event(.lap, 5),
-            event(.motionResumed, 40),
-            event(.marker, 10),
-            event(.pause, 20),
-            event(.segment, 25),
-            event(.resume, 30),
-            event(.motionPaused, 35),
-            event(.pauseOrResumeRequest, 36)
+        // HealthKit's raw event types: pause 1, resume 2, lap 3, marker 4,
+        // motionPaused 5, motionResumed 6, segment 7, pauseOrResumeRequest 8.
+        // Plain values only; no HKWorkoutEvent is built here.
+        let types = HealthKitManager.keptEventTypes
+        #expect(types == [1: .pause, 2: .resume, 5: .motionPaused, 6: .motionResumed])
+
+        let events: [(rawType: Int, time: Date)] = [
+            (3, at(minutes: 5)),
+            (6, at(minutes: 40)),
+            (4, at(minutes: 10)),
+            (1, at(minutes: 20)),
+            (7, at(minutes: 25)),
+            (2, at(minutes: 30)),
+            (5, at(minutes: 35)),
+            (8, at(minutes: 36)),
+            (0, at(minutes: 37)),
+            (99, at(minutes: 38))
         ]
 
-        let kept = HealthKitManager.timingEvents(events)
+        let kept = GPXWorkoutEvent.kept(events, types: types)
 
         // Input order kept; the serializer sorts (eventsAreWrittenInTimeOrder).
         #expect(kept == [

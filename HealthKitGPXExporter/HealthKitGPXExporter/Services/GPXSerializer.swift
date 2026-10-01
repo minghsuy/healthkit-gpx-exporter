@@ -36,6 +36,15 @@ enum GPXWorkoutEventType: String, Equatable {
 struct GPXWorkoutEvent: Equatable {
     let type: GPXWorkoutEventType
     let time: Date
+
+    /// Keeps the events whose raw HealthKit type is in `types`, in input
+    /// order (the serializer sorts). Plain values only, so tests never build
+    /// HKWorkoutEvent objects.
+    static func kept(_ events: [(rawType: Int, time: Date)], types: [Int: GPXWorkoutEventType]) -> [GPXWorkoutEvent] {
+        events.compactMap { event in
+            types[event.rawType].map { GPXWorkoutEvent(type: $0, time: event.time) }
+        }
+    }
 }
 
 /// The workout's own clock, from `HKWorkout`. A GPX track ends at its last
