@@ -32,7 +32,7 @@ struct GPXSerializerTests {
 
         #expect(!metadata.contains("<desc>"))
         #expect(!metadata.contains("<extensions>"))
-        #expect(xml.contains("creator=\"HealthKitGPXExporter/2.0\""))
+        #expect(xml.contains("creator=\"HealthKitGPXExporter/2.1\""))
         #expect(xml.contains("<gpxtpx:hr>140</gpxtpx:hr>"))
     }
 
@@ -59,6 +59,144 @@ struct GPXSerializerTests {
         #expect(block.contains("<hkx:workoutUUID>0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9</hkx:workoutUUID>"))
         #expect(!block.contains("<hkx:source>"))
         #expect(!block.contains("<desc>"))
+    }
+
+    private func at(minutes: Double) -> Date {
+        workoutDate.addingTimeInterval(minutes * 60)
+    }
+
+    private func timing(events: [GPXWorkoutEvent] = [], distance: Double? = 21_234.56) -> GPXWorkoutTiming {
+        GPXWorkoutTiming(
+            start: workoutDate,
+            end: at(minutes: 75),
+            duration: 3_605.4,
+            totalDistanceMeters: distance,
+            events: events
+        )
+    }
+
+    @Test func timingFieldsFollowWorkoutUUIDInOrder() throws {
+        let uuid = try #require(UUID(uuidString: "0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9"))
+        let metadata = GPXWorkoutMetadata(
+            workoutUUID: uuid,
+            timing: timing(),
+            source: GPXWorkoutSource(name: "Workout", bundleIdentifier: "com.apple.health")
+        )
+        let xml = GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [], metadata: metadata)
+        let block = try metadataBlock(xml)
+
+        #expect(block.contains("<hkx:workoutStart>2026-09-21T14:13:20Z</hkx:workoutStart>"))
+        #expect(block.contains("<hkx:workoutEnd>2026-09-21T15:28:20Z</hkx:workoutEnd>"))
+        #expect(block.contains("<hkx:workoutDuration>3605</hkx:workoutDuration>"))
+        #expect(block.contains("<hkx:totalDistance>21234.6</hkx:totalDistance>"))
+
+        let order = ["<hkx:workoutUUID>", "<hkx:workoutStart>", "<hkx:workoutEnd>",
+                     "<hkx:workoutDuration>", "<hkx:totalDistance>", "<hkx:source>"]
+        let positions = try order.map { try #require(block.range(of: $0)).lowerBound }
+        #expect(positions == positions.sorted())
+    }
+
+    @Test func durationRoundsToWholeSeconds() throws {
+        let rounded = GPXWorkoutTiming(start: workoutDate, end: at(minutes: 60), duration: 3_299.5)
+        let block = try metadataBlock(GPXSerializer().serialize(
+            workoutDate: workoutDate, matchedData: [], metadata: GPXWorkoutMetadata(timing: rounded)
+        ))
+
+        #expect(block.contains("<hkx:workoutDuration>3300</hkx:workoutDuration>"))
+    }
+
+    @Test func totalDistanceIsOmittedWhenMissing() throws {
+        let metadata = GPXWorkoutMetadata(timing: timing(distance: nil))
+        let block = try metadataBlock(GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [], metadata: metadata))
+
+        #expect(block.contains("<hkx:workoutDuration>"))
+        #expect(!block.contains("totalDistance"))
+    }
+
+    @Test func eventsAreWrittenInTimeOrder() throws {
+        let events = [
+            GPXWorkoutEvent(type: .resume, time: at(minutes: 30)),
+            GPXWorkoutEvent(type: .motionPaused, time: at(minutes: 50)),
+            GPXWorkoutEvent(type: .pause, time: at(minutes: 20)),
+            GPXWorkoutEvent(type: .motionResumed, time: at(minutes: 52))
+        ]
+        let metadata = GPXWorkoutMetadata(timing: timing(events: events))
+        let block = try metadataBlock(GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [], metadata: metadata))
+
+        let expected = """
+              <hkx:events>
+                <hkx:event type="pause" time="2026-09-21T14:33:20Z"/>
+                <hkx:event type="resume" time="2026-09-21T14:43:20Z"/>
+                <hkx:event type="motionPaused" time="2026-09-21T15:03:20Z"/>
+                <hkx:event type="motionResumed" time="2026-09-21T15:05:20Z"/>
+              </hkx:events>
+        """
+        #expect(block.contains(expected))
+    }
+
+    @Test func noEventsMeansNoEventsElement() throws {
+        let metadata = GPXWorkoutMetadata(timing: timing(events: []))
+        let block = try metadataBlock(GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [], metadata: metadata))
+
+        #expect(block.contains("<hkx:workoutStart>"))
+        #expect(!block.contains("events"))
+        #expect(!block.contains("hkx:event"))
+    }
+
+    @Test func onlyPauseAndResumeEventTypesAreKept() {
+        // HealthKit's raw event types: pause 1, resume 2, lap 3, marker 4,
+        // motionPaused 5, motionResumed 6, segment 7, pauseOrResumeRequest 8.
+        // Plain values only; no HKWorkoutEvent is built here.
+        let types = HealthKitManager.keptEventTypes
+        #expect(types == [1: .pause, 2: .resume, 5: .motionPaused, 6: .motionResumed])
+
+        let events: [(rawType: Int, time: Date)] = [
+            (3, at(minutes: 5)),
+            (6, at(minutes: 40)),
+            (4, at(minutes: 10)),
+            (1, at(minutes: 20)),
+            (7, at(minutes: 25)),
+            (2, at(minutes: 30)),
+            (5, at(minutes: 35)),
+            (8, at(minutes: 36)),
+            (0, at(minutes: 37)),
+            (99, at(minutes: 38))
+        ]
+
+        let kept = GPXWorkoutEvent.kept(events, types: types)
+
+        // Input order kept; the serializer sorts (eventsAreWrittenInTimeOrder).
+        #expect(kept == [
+            GPXWorkoutEvent(type: .motionResumed, time: at(minutes: 40)),
+            GPXWorkoutEvent(type: .pause, time: at(minutes: 20)),
+            GPXWorkoutEvent(type: .resume, time: at(minutes: 30)),
+            GPXWorkoutEvent(type: .motionPaused, time: at(minutes: 35))
+        ])
+    }
+
+    @Test func timingAndEventsRoundTripThroughXMLParser() throws {
+        let metadata = GPXWorkoutMetadata(timing: timing(events: [
+            GPXWorkoutEvent(type: .motionPaused, time: at(minutes: 50)),
+            GPXWorkoutEvent(type: .pause, time: at(minutes: 20))
+        ]))
+        let xml = GPXSerializer().serialize(workoutDate: workoutDate, matchedData: [point(heartRate: 140)], metadata: metadata)
+
+        let collector = ElementCollector()
+        let parser = XMLParser(data: Data(xml.utf8))
+        parser.shouldProcessNamespaces = true
+        parser.delegate = collector
+        let parsed = parser.parse()
+        #expect(parsed)
+        #expect(parser.parserError == nil)
+
+        let namespace = GPXSerializer.extensionNamespace
+        let iso = ISO8601DateFormatter()
+        #expect(collector.text["\(namespace)|workoutStart"].flatMap(iso.date(from:)) == workoutDate)
+        #expect(collector.text["\(namespace)|workoutEnd"].flatMap(iso.date(from:)) == at(minutes: 75))
+        #expect(collector.text["\(namespace)|workoutDuration"] == "3605")
+        let events = collector.attributes.filter { $0.element == "\(namespace)|event" }.map(\.values)
+        #expect(events.map { $0["type"] } == ["pause", "motionPaused"])
+        #expect(events.map { $0["time"].flatMap(iso.date(from:)) } == [at(minutes: 20), at(minutes: 50)])
     }
 
     @Test func metadataChildrenFollowGPXSchemaOrder() throws {
@@ -157,10 +295,12 @@ struct GPXSerializerTests {
     }
 }
 
-/// Records every element as "namespaceURI|localName" and the text of leaf
-/// elements, so a test can assert what an XML consumer would actually read.
+/// Records every element as "namespaceURI|localName", its attributes, and
+/// the text of leaf elements, so a test can assert what an XML consumer
+/// would actually read.
 private final class ElementCollector: NSObject, XMLParserDelegate {
     var elements: [String] = []
+    var attributes: [(element: String, values: [String: String])] = []
     var text: [String: String] = [:]
     private var current = ""
     private var buffer = ""
@@ -174,6 +314,7 @@ private final class ElementCollector: NSObject, XMLParserDelegate {
     ) {
         current = "\(namespaceURI ?? "")|\(elementName)"
         elements.append(current)
+        attributes.append((current, attributeDict))
         buffer = ""
     }
 

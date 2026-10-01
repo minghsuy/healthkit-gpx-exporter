@@ -26,6 +26,16 @@ structured elements in the
   <time>2026-09-30T19:06:00Z</time>
   <extensions>
     <hkx:workoutUUID>0A1B2C3D-4E5F-6071-8293-A4B5C6D7E8F9</hkx:workoutUUID>
+    <hkx:workoutStart>2026-09-30T19:06:00Z</hkx:workoutStart>
+    <hkx:workoutEnd>2026-09-30T20:21:00Z</hkx:workoutEnd>
+    <hkx:workoutDuration>3780</hkx:workoutDuration>
+    <hkx:totalDistance>21234.6</hkx:totalDistance>
+    <hkx:events>
+      <hkx:event type="pause" time="2026-09-30T19:26:00Z"/>
+      <hkx:event type="resume" time="2026-09-30T19:36:00Z"/>
+      <hkx:event type="motionPaused" time="2026-09-30T19:56:00Z"/>
+      <hkx:event type="motionResumed" time="2026-09-30T19:58:00Z"/>
+    </hkx:events>
     <hkx:source>
       <hkx:name>Example Recorder</hkx:name>
       <hkx:bundleIdentifier>com.example.recorder</hkx:bundleIdentifier>
@@ -40,8 +50,42 @@ structured elements in the
   reader may use it to spot re-exports. The same ride recorded by two apps
   (say a watch and a bike app) has two UUIDs; matching those is the reader's
   job, by overlapping time, not by UUID.
-- **`creator`** is now `HealthKitGPXExporter/2.0`; match on the
-  `HealthKitGPXExporter` prefix.
+- **Workout times (2.1).** `hkx:workoutStart` and `hkx:workoutEnd` are the
+  workout's own `startDate` and `endDate` (ISO-8601 UTC), and
+  `hkx:workoutDuration` is `HKWorkout.duration` in seconds, which excludes
+  pauses. `hkx:totalDistance` is in metres and appears only when HealthKit
+  has a total distance. The track alone cannot show these: it ends at its
+  last route point, and a recorder logs few points while the rider stands
+  still, so a workout left running after the ride looks shorter than it was.
+- **Pause events (2.1).** `<hkx:events>` lists the workout's `pause`,
+  `resume`, `motionPaused` and `motionResumed` (auto-pause) events in time
+  order. Laps, markers and segments are left out, since they do not change
+  whether the rider is moving. When the workout has no such events,
+  `<hkx:events>` is omitted entirely, rather than written empty.
+- **Reading these fields:**
+  - No `<hkx:events>` means HealthKit holds no pause or resume events for
+    this workout, not that the rider never stopped: some recorders do not
+    log pauses.
+  - `hkx:workoutDuration` is the source app's `HKWorkout.duration`. Apple
+    Watch workouts (recorded with `HKWorkoutBuilder`) leave out paused
+    intervals; other apps may include them.
+  - If `workoutDuration` is shorter than `workoutEnd` minus `workoutStart`
+    and there are no events, assume pauses happened that were not logged.
+  - Events are points in time (`HKWorkoutEvent.dateInterval.start`), and
+    pause and resume need not balance or nest. A `pause` with no later
+    `resume` runs to `workoutEnd`; a `resume` with no earlier `pause` is
+    ignored. Manual pauses (`pause`/`resume`) and auto-pauses
+    (`motionPaused`/`motionResumed`) are independent and can overlap: the
+    rider is moving when neither kind of pause is in effect.
+  - `hkx:workoutStart` equals `<metadata><time>`; both come from the
+    workout's `startDate`.
+- These let the bike-ride-analyzer server compute exact riding time, trim
+  idle time before the first resume or after the last movement, and match
+  and blend recordings of the same ride (bike-ride-analyzer#883).
+- **`creator`** is now `HealthKitGPXExporter/2.1`; match on the
+  `HealthKitGPXExporter` prefix. The version marks the format: from 2.1,
+  `hkx:workoutStart`, `hkx:workoutEnd` and `hkx:workoutDuration` are always
+  present.
 - **Filenames** are `workout_yyyy-MM-dd_HHmmss_<first 8 of the workout
   UUID>.gpx`, so two workouts that start in the same second no longer
   overwrite each other. v1 files are not renamed or removed, so re-exporting

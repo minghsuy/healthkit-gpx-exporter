@@ -23,10 +23,50 @@ struct GPXZoneSummary: Equatable {
     let zones: [GPXZoneDuration]
 }
 
+/// The pause and resume kinds of `HKWorkoutEvent`. Laps, markers and
+/// segments are left out: they do not change whether the rider is moving.
+enum GPXWorkoutEventType: String, Equatable {
+    case pause
+    case resume
+    /// Auto-pause: the recorder detected that the rider stopped.
+    case motionPaused
+    case motionResumed
+}
+
+struct GPXWorkoutEvent: Equatable {
+    let type: GPXWorkoutEventType
+    let time: Date
+
+    /// Keeps the events whose raw HealthKit type is in `types`, in input
+    /// order (the serializer sorts). Plain values only, so tests never build
+    /// HKWorkoutEvent objects.
+    static func kept(_ events: [(rawType: Int, time: Date)], types: [Int: GPXWorkoutEventType]) -> [GPXWorkoutEvent] {
+        events.compactMap { event in
+            types[event.rawType].map { GPXWorkoutEvent(type: $0, time: event.time) }
+        }
+    }
+}
+
+/// The workout's own clock, from `HKWorkout`. A GPX track ends at its last
+/// route point, which can be long before the workout ended (the recorder
+/// logs few points while the rider stands still), so these are what tell a
+/// reader the real start, end and moving time.
+struct GPXWorkoutTiming: Equatable {
+    let start: Date
+    let end: Date
+    /// HKWorkout.duration as the source app saved it. Apple Watch workouts
+    /// (HKWorkoutBuilder) leave out paused intervals; other apps may not.
+    let duration: TimeInterval
+    /// Metres; nil when HealthKit has no total distance.
+    var totalDistanceMeters: Double?
+    var events: [GPXWorkoutEvent] = []
+}
+
 struct GPXWorkoutMetadata: Equatable {
     /// HKWorkout.uuid: the same across re-exports of one workout. The same
     /// ride recorded by two apps has two UUIDs.
     var workoutUUID: UUID?
+    var timing: GPXWorkoutTiming?
     var source: GPXWorkoutSource?
     var zoneSummaries: [GPXZoneSummary] = []
 }
@@ -58,11 +98,12 @@ struct GPXSerializer {
         let timeStr = dateFormatter.string(from: workoutDate)
 
         // The server tells a recorded ride from a planned route by the creator
-        // prefix "HealthKitGPXExporter"; keep that prefix.
+        // prefix "HealthKitGPXExporter"; keep that prefix. The version marks
+        // the format: 2.1 and later always carry the workout times.
         var xml = """
         <?xml version="1.0" encoding="UTF-8"?>
         <gpx version="1.1"
-             creator="HealthKitGPXExporter/2.0"
+             creator="HealthKitGPXExporter/2.1"
              xmlns="http://www.topografix.com/GPX/1/1"
              xmlns:gpxtpx="http://www.garmin.com/xmlschemas/TrackPointExtension/v1"
              xmlns:hkx="\(Self.extensionNamespace)"
@@ -117,13 +158,17 @@ struct GPXSerializer {
 
     private func metadataExtensions(_ metadata: GPXWorkoutMetadata?) -> String {
         guard let metadata,
-              metadata.workoutUUID != nil || metadata.source != nil || !metadata.zoneSummaries.isEmpty else {
+              metadata.workoutUUID != nil || metadata.timing != nil
+                || metadata.source != nil || !metadata.zoneSummaries.isEmpty else {
             return ""
         }
 
         var xml = "\n    <extensions>"
         if let workoutUUID = metadata.workoutUUID {
             xml += "\n      \(xmlTag("hkx:workoutUUID", value: workoutUUID.uuidString))"
+        }
+        if let timing = metadata.timing {
+            xml += timingElements(timing)
         }
         if let source = metadata.source {
             xml += "\n      <hkx:source>"
@@ -148,6 +193,25 @@ struct GPXSerializer {
             xml += "\n      </hkx:zones>"
         }
         xml += "\n    </extensions>"
+        return xml
+    }
+
+    private func timingElements(_ timing: GPXWorkoutTiming) -> String {
+        var xml = "\n      \(xmlTag("hkx:workoutStart", value: dateFormatter.string(from: timing.start)))"
+        xml += "\n      \(xmlTag("hkx:workoutEnd", value: dateFormatter.string(from: timing.end)))"
+        xml += "\n      \(xmlTag("hkx:workoutDuration", value: String(format: "%.0f", timing.duration)))"
+        if let meters = timing.totalDistanceMeters {
+            xml += "\n      \(xmlTag("hkx:totalDistance", value: String(format: "%.1f", meters)))"
+        }
+        // No element at all without events: an empty <hkx:events/> would
+        // read as "recorded, never paused", which the source may not know.
+        guard !timing.events.isEmpty else { return xml }
+        xml += "\n      <hkx:events>"
+        for event in timing.events.sorted(by: { $0.time < $1.time }) {
+            let attributes = [("type", event.type.rawValue), ("time", dateFormatter.string(from: event.time))]
+            xml += "\n        \(xmlEmptyTag("hkx:event", attributes: attributes))"
+        }
+        xml += "\n      </hkx:events>"
         return xml
     }
 

@@ -128,12 +128,38 @@ class HealthKitManager {
         try await healthStore.enableBackgroundDelivery(for: type, frequency: .immediate)
     }
 
-    /// Plain-value metadata for the GPX: the workout UUID, the recording app
-    /// and, on iOS 27, time in heart-rate and power zones.
+    /// HealthKit event types the GPX keeps, keyed by the SDK's own raw
+    /// values: pause and resume, manual and auto-pause. Laps, markers,
+    /// segments and pause-or-resume requests are dropped.
+    static let keptEventTypes: [Int: GPXWorkoutEventType] = [
+        HKWorkoutEventType.pause.rawValue: .pause,
+        HKWorkoutEventType.resume.rawValue: .resume,
+        HKWorkoutEventType.motionPaused.rawValue: .motionPaused,
+        HKWorkoutEventType.motionResumed.rawValue: .motionResumed
+    ]
+
+    /// The serializer puts the result in time order.
+    static func timingEvents(_ events: [HKWorkoutEvent]) -> [GPXWorkoutEvent] {
+        GPXWorkoutEvent.kept(
+            events.map { (rawType: $0.type.rawValue, time: $0.dateInterval.start) },
+            types: keptEventTypes
+        )
+    }
+
+    /// Plain-value metadata for the GPX: the workout UUID, its start, end,
+    /// moving duration, distance and pause events, the recording app and, on
+    /// iOS 27, time in heart-rate and power zones.
     func metadata(for workout: HKWorkout) -> GPXWorkoutMetadata {
         let source = workout.sourceRevision.source
         var metadata = GPXWorkoutMetadata(
             workoutUUID: workout.uuid,
+            timing: GPXWorkoutTiming(
+                start: workout.startDate,
+                end: workout.endDate,
+                duration: workout.duration,
+                totalDistanceMeters: workout.totalDistance?.doubleValue(for: .meter()),
+                events: Self.timingEvents(workout.workoutEvents ?? [])
+            ),
             source: GPXWorkoutSource(name: source.name, bundleIdentifier: source.bundleIdentifier)
         )
         #if compiler(>=6.4)
