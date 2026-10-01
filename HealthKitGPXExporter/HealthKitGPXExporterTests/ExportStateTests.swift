@@ -97,6 +97,53 @@ struct ExportStateTests {
         #expect(saved.contains(onDisk.uuid) && saved.contains(inMemory.uuid))
     }
 
+    @Test func reloadRecoversAnUnreadableRecordWithoutASave() throws {
+        let file = tempFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("not json".utf8).write(to: file)
+        let store = ExportedWorkoutStore(fileURL: file)
+        let viewModel = WorkoutViewModel(exportedStore: store)
+
+        // Still unreadable: the background pass must skip, and the file is
+        // left as it was.
+        #expect(!store.reloadIfUnreadable())
+        #expect(viewModel.exportHistoryUnavailable)
+        #expect(String(decoding: try Data(contentsOf: file), as: UTF8.self) == "not json")
+
+        // Readable now (say, after first unlock).
+        let onDisk = WorkoutCandidate(uuid: UUID(), startDate: start)
+        var stored = ExportLedger()
+        stored.markExported(onDisk)
+        try JSONEncoder().encode(stored).write(to: file)
+
+        viewModel.refreshExportHistory()
+
+        #expect(store.loadError == nil)
+        #expect(!viewModel.exportHistoryUnavailable)
+        #expect(store.ledger.contains(onDisk.uuid))
+        #expect(store.reloadIfUnreadable())
+    }
+
+    @Test func reloadKeepsExportsMadeWhileTheRecordWasUnreadable() throws {
+        let file = tempFile()
+        defer { try? FileManager.default.removeItem(at: file) }
+        try Data("not json".utf8).write(to: file)
+        let store = ExportedWorkoutStore(fileURL: file)
+        // "Export Selected" while unreadable: held in memory, save refused.
+        let inMemory = WorkoutCandidate(uuid: UUID(), startDate: start)
+        #expect(!store.markExported(inMemory))
+
+        try JSONEncoder().encode(ExportLedger()).write(to: file)
+
+        #expect(store.reloadIfUnreadable())
+        #expect(store.ledger.contains(inMemory.uuid))
+        // Still unsaved until the next save or flush writes it.
+        #expect(store.hasUnsavedChanges)
+        #expect(store.flush())
+        let saved = try JSONDecoder().decode(ExportLedger.self, from: Data(contentsOf: file))
+        #expect(saved.contains(inMemory.uuid))
+    }
+
     @Test func failedWriteIsReportedAndFlushRetriesIt() throws {
         // A regular file where the record's directory should be makes every
         // write fail, the way an unwritable or protected location would.

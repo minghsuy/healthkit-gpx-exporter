@@ -73,6 +73,12 @@ class WorkoutViewModel: ObservableObject {
         exportedStore.loadError != nil
     }
 
+    /// Retries a record that failed to read at launch (say, before first
+    /// unlock), so "Export All New" re-enables without a relaunch.
+    func refreshExportHistory() {
+        exportedStore.reloadIfUnreadable()
+    }
+
     func isExported(_ workout: CyclingWorkout) -> Bool {
         exportedStore.ledger.contains(workout.id)
     }
@@ -104,6 +110,7 @@ class WorkoutViewModel: ObservableObject {
     func fetchWorkouts() async {
         isLoading = true
         defer { isLoading = false }
+        refreshExportHistory()
 
         do {
             let hkWorkouts = try await healthKitManager.fetchCyclingWorkouts()

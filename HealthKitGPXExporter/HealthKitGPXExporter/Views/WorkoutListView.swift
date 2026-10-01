@@ -21,6 +21,12 @@ struct WorkoutListView: View {
                         .disabled(viewModel.exportHistoryUnavailable)
                         .listRowBackground(Color.clear)
                         .listRowInsets(EdgeInsets())
+                    } footer: {
+                        // The count is the whole history while the record is
+                        // unreadable; say why the button is off.
+                        if viewModel.exportHistoryUnavailable {
+                            Text("Off: export history can't be read. Unlock the iPhone and reopen, or reset it in Settings.")
+                        }
                     }
                 }
 
